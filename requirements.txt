@@ -1,0 +1,18 @@
+# Document Migration Tool — Python dependencies
+#
+# Install all dependencies with one command:
+#   pip install -r requirements.txt
+#
+# Python 3.10 or newer is required.
+#
+# Dependency notes:
+#   python-docx — reads and writes Word .docx files, including paragraphs,
+#                 tables, images, styles, and raw XML manipulation
+#   rapidfuzz   — fast fuzzy string matching for the auto-mapper
+#   polars      — DataFrame library used for CSV migration report export
+#   PyQt5       — cross-platform GUI framework (Windows, macOS, Linux)
+
+python-docx>=1.1.0
+rapidfuzz>=3.0.0
+polars>=0.20.0
+PyQt5>=5.15.0
