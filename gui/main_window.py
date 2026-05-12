@@ -4,15 +4,16 @@
 # The top-level application window.
 #
 # Contains:
-#   HorizontalTabBar — custom QTabBar that draws tab text horizontally
-#                      (Qt's default West-position tab bar rotates text 90
-#                      degrees which is unreadable for multi-word labels)
-#   MainWindow       — QMainWindow shell that hosts the left tab bar
+#   HorizontalTabBar — custom QTabBar that draws each tab as a stacked
+#                      icon-above-label layout (icon centered, text below).
+#                      Qt's default West-position tab bar rotates text 90
+#                      degrees, which is unreadable for multi-word labels.
+#   MainWindow       — QMainWindow shell that hosts the left tab bar.
 #
-# Adding a new tab in the future:
-#   1. Create a new QWidget subclass in gui/your_new_tab.py
-#   2. Import it in this file
-#   3. Call self._tab_widget.addTab(YourNewTab(), "Label Text")
+# Adding a new tab:
+#   1. Create a QWidget subclass in gui/your_new_tab.py
+#   2. Import it here
+#   3. Call self._tab_widget.addTab(YourTab(), QIcon(path), "Label\nText")
 #   No other files need to change.
 # =============================================================================
 
@@ -28,108 +29,108 @@ from PyQt5.QtWidgets import (
     QTabWidget,
 )
 from PyQt5.QtCore import Qt, QRect, QSize
-from PyQt5.QtGui  import QColor, QFont, QPainter
+from PyQt5.QtGui  import QColor, QFont, QIcon, QPainter
 
 from gui.migration_tab import MigrationTab
+
+
+# Resolve the assets directory relative to this file so paths work whether
+# the app is run from source or packaged with PyInstaller.
+ASSETS_DIR = Path(__file__).parent.parent / "assets"
 
 
 # =============================================================================
 # HorizontalTabBar
 #
-# Problem being solved:
-#   Qt's default QTabBar, when positioned on the West (left) side of a
-#   QTabWidget, rotates each tab's content 90 degrees so the text reads
-#   from bottom to top. For short labels this is tolerable but for labels
-#   like "Document Migration" the text is unreadable and may be clipped.
+# Draws each tab as: icon centered horizontally, label text below the icon.
+# Both elements are centered within the fixed-size tab button.
 #
-# Solution:
-#   Subclass QTabBar and override two methods:
-#     tabSizeHint() — returns a fixed width/height for each tab button,
-#                     wide enough to display the full label horizontally
-#     paintEvent()  — draws each tab manually using QPainter with upright
-#                     (0 degree rotation) text centered in the tab area
-#
-# This approach gives full control over tab appearance without the text
-# rotation side effect of Qt's default West tab rendering.
+# Uses Qt's built-in tabIcon(index) so icons are set the standard way via
+# QTabWidget.addTab(widget, QIcon(...), "Label") — no custom API needed.
 # =============================================================================
 
-# Fixed dimensions for every tab button
-TAB_BUTTON_WIDTH  = 110   # Wide enough for "Document Migration" across two lines
-TAB_BUTTON_HEIGHT = 56    # Tall enough for two lines of text
+TAB_BUTTON_WIDTH  = 110   # px — wide enough for two-word labels
+TAB_BUTTON_HEIGHT = 82    # px — icon(28) + gap(6) + text(~28) + padding(20)
+TAB_ICON_SIZE     = 28    # px — square icon rendered in each tab
 
-# Colors for the tab bar — dark navy theme
-TAB_COLOR_BACKGROUND          = QColor("#1e293b")   # Default tab background
-TAB_COLOR_BACKGROUND_SELECTED = QColor("#273549")   # Selected tab background
-TAB_COLOR_TEXT_NORMAL         = QColor("#94a3b8")   # Default tab text
-TAB_COLOR_TEXT_SELECTED       = QColor("#ffffff")   # Selected tab text
-TAB_COLOR_ACCENT              = QColor("#3b82f6")   # Blue left-edge accent bar
+# Dark navy theme colors
+TAB_COLOR_BACKGROUND          = QColor("#1e293b")
+TAB_COLOR_BACKGROUND_SELECTED = QColor("#273549")
+TAB_COLOR_TEXT_NORMAL         = QColor("#94a3b8")
+TAB_COLOR_TEXT_SELECTED       = QColor("#ffffff")
+TAB_COLOR_ACCENT              = QColor("#3b82f6")   # Blue left-edge accent strip
 
 
 class HorizontalTabBar(QTabBar):
     """
-    A QTabBar that draws all tab labels horizontally regardless of tab position.
-    Intended for use with QTabWidget.West tab position.
+    QTabBar that renders each tab as a vertically stacked icon + label,
+    regardless of the tab widget's West/East/North/South position setting.
     """
 
-    def tabSizeHint(self, tab_index: int) -> QSize:
-        """
-        Return the size for the tab button at the given index.
-        All tabs use the same fixed width and height for visual consistency.
-        """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        # Force RoundedWest shape so Qt lays tabs out top-to-bottom.
+        # Without this, the default RoundedNorth shape lays them left-to-right,
+        # which causes both tabs to appear side by side instead of stacked.
+        self.setShape(QTabBar.RoundedWest)
+
+    def tabSizeHint(self, index: int) -> QSize:
         return QSize(TAB_BUTTON_WIDTH, TAB_BUTTON_HEIGHT)
 
-    def paintEvent(self, paint_event):
-        """
-        Custom paint event — draws all tabs with horizontal text.
-
-        For each tab:
-          1. Fill the background color (differs for selected vs unselected)
-          2. Draw a blue left-edge accent bar on the selected tab
-          3. Draw the label text horizontally centered in the tab area
-        """
+    def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
 
-        for tab_index in range(self.count()):
-            tab_rect     = self.tabRect(tab_index)
-            is_selected  = (self.currentIndex() == tab_index)
+        for index in range(self.count()):
+            rect        = self.tabRect(index)
+            is_selected = (self.currentIndex() == index)
 
             # ── Background ─────────────────────────────────────────────────────
-            background_color = (
-                TAB_COLOR_BACKGROUND_SELECTED if is_selected
-                else TAB_COLOR_BACKGROUND
-            )
-            painter.fillRect(tab_rect, background_color)
+            bg = TAB_COLOR_BACKGROUND_SELECTED if is_selected else TAB_COLOR_BACKGROUND
+            painter.fillRect(rect, bg)
 
             # ── Left accent bar (selected tab only) ────────────────────────────
             if is_selected:
-                accent_bar_rect = QRect(
-                    tab_rect.left(),
-                    tab_rect.top(),
-                    3,               # 3px wide accent strip
-                    tab_rect.height(),
+                painter.fillRect(
+                    QRect(rect.left(), rect.top(), 3, rect.height()),
+                    TAB_COLOR_ACCENT,
                 )
-                painter.fillRect(accent_bar_rect, TAB_COLOR_ACCENT)
 
-            # ── Label text ─────────────────────────────────────────────────────
-            label_font = QFont("Segoe UI", 10 if is_selected else 9)
+            # ── Icon (centered, top portion) ───────────────────────────────────
+            icon     = self.tabIcon(index)
+            icon_top = rect.top() + 10   # pixels of top padding above the icon
+
+            if not icon.isNull():
+                # Slightly dim the icon when the tab is not active
+                painter.setOpacity(1.0 if is_selected else 0.55)
+                pixmap = icon.pixmap(QSize(TAB_ICON_SIZE, TAB_ICON_SIZE))
+                icon_x = rect.left() + (rect.width() - TAB_ICON_SIZE) // 2
+                painter.drawPixmap(icon_x, icon_top, pixmap)
+                painter.setOpacity(1.0)
+                text_top = icon_top + TAB_ICON_SIZE + 6   # gap between icon and text
+            else:
+                # No icon — start text a bit lower for visual balance
+                text_top = icon_top + 4
+
+            # ── Label (centered, below icon) ───────────────────────────────────
+            label_font = QFont("Segoe UI", 9)
             label_font.setBold(is_selected)
             painter.setFont(label_font)
             painter.setPen(
                 TAB_COLOR_TEXT_SELECTED if is_selected else TAB_COLOR_TEXT_NORMAL
             )
 
-            # Inset the text area from the left accent bar
             text_rect = QRect(
-                tab_rect.left() + 8,        # Leave room past the accent bar
-                tab_rect.top() + 4,
-                tab_rect.width() - 12,
-                tab_rect.height() - 8,
+                rect.left() + 4,
+                text_top,
+                rect.width() - 8,
+                rect.bottom() - text_top - 4,
             )
             painter.drawText(
                 text_rect,
-                Qt.AlignHCenter | Qt.AlignVCenter | Qt.TextWordWrap,
-                self.tabText(tab_index),
+                Qt.AlignHCenter | Qt.AlignTop | Qt.TextWordWrap,
+                self.tabText(index),
             )
 
         painter.end()
@@ -140,7 +141,7 @@ class HorizontalTabBar(QTabBar):
 # =============================================================================
 class MainWindow(QMainWindow):
     """
-    Application shell — hosts the left horizontal-text tab bar and all tabs.
+    Application shell — hosts the left sidebar tab bar and all content tabs.
     """
 
     MINIMUM_WINDOW_WIDTH  = 960
@@ -152,43 +153,69 @@ class MainWindow(QMainWindow):
         self._build_ui()
 
     def _configure_window(self):
-        """Set window title, minimum size, and center on the primary screen."""
-        self.setWindowTitle("Document Migration Tool")
+        """Set title, icon, minimum size, and center on the primary screen."""
+        self.setWindowTitle("DRAFT Tool")
         self.setMinimumSize(self.MINIMUM_WINDOW_WIDTH, self.MINIMUM_WINDOW_HEIGHT)
         self.resize(
             self.MINIMUM_WINDOW_WIDTH  + 40,
             self.MINIMUM_WINDOW_HEIGHT + 40,
         )
 
+        # Application icon — used by the OS for the window title bar, dock /
+        # taskbar, and (when set on QApplication in main.py) the .exe icon.
+        app_icon_path = ASSETS_DIR / "app_icon.png"
+        if app_icon_path.exists():
+            self.setWindowIcon(QIcon(str(app_icon_path)))
+
         # Center the window on the primary screen
-        screen_geometry = QApplication.primaryScreen().geometry()
-        center_x = (screen_geometry.width()  - self.width())  // 2
-        center_y = (screen_geometry.height() - self.height()) // 2
-        self.move(center_x, center_y)
+        screen = QApplication.primaryScreen().geometry()
+        self.move(
+            (screen.width()  - self.width())  // 2,
+            (screen.height() - self.height()) // 2,
+        )
 
     def _build_ui(self):
-        """Create the tab widget with the custom horizontal tab bar."""
+        """Create the tab widget with the custom icon-above-label tab bar."""
         self._tab_widget = QTabWidget()
-        self._tab_widget.setTabPosition(QTabWidget.West)
+        # setTabBar must come BEFORE setTabPosition. Qt sets the bar's shape
+        # (RoundedWest) when setTabPosition is called — if the bar hasn't been
+        # installed yet, it sets the shape on the default bar, not ours.
         self._tab_widget.setTabBar(HorizontalTabBar())
+        self._tab_widget.setTabPosition(QTabWidget.West)
         self._tab_widget.setObjectName("main_tabs")
 
         # ── Tab 1: Document Migration ──────────────────────────────────────────
-        self._tab_widget.addTab(MigrationTab(), "📄 Document\nMigration")
+        self._tab_widget.addTab(
+            MigrationTab(),
+            self._load_icon("app_icon.png"),
+            "Document\nMigration",
+        )
 
         # ── Future tabs (add here without touching other files) ────────────────
-        # from gui.some_other_tab import SomeOtherTab
-        # self._tab_widget.addTab(SomeOtherTab(), "🔧 Other\nTool")
+        # from gui.document_review_tab import DocumentReviewTab
+        # self._tab_widget.addTab(DocumentReviewTab(), self._load_icon("genai.png"), "Document\nReview")
 
         self.setCentralWidget(self._tab_widget)
         self._apply_styles()
 
+    @staticmethod
+    def _load_icon(filename: str) -> QIcon:
+        """
+        Load a QIcon from the assets directory.
+        Returns a null QIcon (renders as nothing) if the file does not exist,
+        so a missing asset file never crashes the application.
+        """
+        path = ASSETS_DIR / filename
+        if path.exists():
+            return QIcon(str(path))
+        return QIcon()
+
     def _apply_styles(self):
         """
-        Apply styles to the window shell and tab bar container.
-        Tab button painting (colors, text, accent bar) is handled entirely
-        by HorizontalTabBar.paintEvent — we do not define QTabBar::tab rules
-        here because they would conflict with the custom paint logic.
+        Stylesheet for the window shell and tab widget container.
+        Tab button painting (colors, icons, text) is handled entirely by
+        HorizontalTabBar.paintEvent — QTabBar::tab rules here are kept
+        minimal to avoid conflicting with the custom paint logic.
         """
         self.setStyleSheet("""
             QMainWindow {

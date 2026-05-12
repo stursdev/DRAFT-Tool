@@ -38,6 +38,7 @@ if PROJECT_ROOT not in sys.path:
 
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtCore    import Qt
+from PyQt5.QtGui     import QIcon
 
 from gui.main_window import MainWindow
 
@@ -51,8 +52,16 @@ def main():
     # sys.argv is passed so Qt can process any command-line arguments it
     # recognises (e.g. -style, -platform flags)
     app = QApplication(sys.argv)
-    app.setApplicationName("Document Migration Tool")
+    app.setApplicationName("DRAFT Tool")
     app.setOrganizationName("SEP Tools")
+
+    # Set the application-level icon. This is what the OS uses for the
+    # taskbar/dock entry and what PyInstaller embeds as the .exe icon when
+    # the app is packaged. Setting it on QApplication (not just the window)
+    # ensures it propagates to all dialogs and child windows.
+    icon_path = Path(__file__).parent / "assets" / "app_icon.png"
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
 
     window = MainWindow()
     window.show()

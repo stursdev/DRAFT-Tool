@@ -172,10 +172,8 @@ class SectionLabel(QLabel):
     def __init__(self, instruction_text: str, parent=None):
         super().__init__(instruction_text, parent)
 
-        # Style: small, grey, italic — informative but visually subordinate
-        # to the step title above it
         self.setStyleSheet(
-            "color: #6b7280; font-size: 11px; font-style: italic;"
+            "color: #111827; font-size: 11px; font-style: italic;"
         )
         self.setWordWrap(True)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
