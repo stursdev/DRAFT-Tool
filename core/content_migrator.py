@@ -253,12 +253,15 @@ class ContentMigrator:
 
         for result in self.mapping_results:
 
-            if result.status == MappingStatus.UNMAPPED or result.dest_section is None:
-                self.report.unmapped_sections.append(result.source_section.title)
-                continue
-
+            # SKIPPED must be checked before the dest_section is None guard.
+            # Skipped rows intentionally have dest_section=None, so testing
+            # dest_section first would miscount them as Unmapped.
             if result.status == MappingStatus.SKIPPED:
                 self.report.skipped_sections.append(result.source_section.title)
+                continue
+
+            if result.status == MappingStatus.UNMAPPED or result.dest_section is None:
+                self.report.unmapped_sections.append(result.source_section.title)
                 continue
 
             destination_title = result.dest_section.title
