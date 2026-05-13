@@ -3,46 +3,48 @@
 #
 # Post-migration pass that identifies migrated content (green text) that
 # duplicates the original boilerplate already present in the same destination
-# section, and recolors those matching paragraphs blue.
+# section, and recolors those sentences blue.
 #
-# Design — section-scoped, sentence-level matching:
+# Design — section-scoped, sentence-level matching and coloring:
 #
 #   Section-scoped:
 #     The template is parsed into a per-section sentence map:
 #       { "1.1 Purpose": {"sentence A", "sentence B", ...}, ... }
-#     When scanning the output document, migrated (green) paragraphs in a
-#     section are only compared against sentences from THAT section in the
-#     template — not against the entire template globally.
+#     Migrated (green) paragraphs in a section are only compared against
+#     sentences from THAT section in the template — not globally.
 #
-#     Why this matters: a sentence that appears in Section C of the template
-#     is irrelevant when reviewing migrated content in Section B. Comparing
-#     globally produces false positives and misses the real intent, which is
-#     "does this migrated sentence duplicate what was already in this section?"
+#   Sentence-level coloring (within a paragraph):
+#     Each green paragraph is analyzed sentence by sentence. Sentences that
+#     exactly match the section boilerplate are colored blue; sentences that
+#     do not match stay green. Both colors can appear in the same paragraph.
 #
-#   Sentence-level:
-#     Each green paragraph's text is compared both as a whole unit and as
-#     individual sentences (split on sentence-ending punctuation). A match
-#     on any sentence is enough to flag the paragraph blue, because even one
-#     verbatim boilerplate sentence in a migrated paragraph warrants review.
+#     Example — paragraph with 3 sentences:
+#       "The ABC program provides support.    ← program name changed → green
+#        The contractor shall deliver reports. ← verbatim boilerplate  → blue
+#        Deliverables are defined in SOW."     ← verbatim boilerplate  → blue
 #
-#   Bullet/list handling:
-#     python-docx's paragraph.text returns only the stored text content —
-#     the bullet character or list number is rendered by Word's list style
-#     and is NOT part of the text string. This means a bullet-point paragraph
-#     and a plain paragraph with identical text produce identical paragraph.text
-#     values, so list items are matched naturally with no extra logic.
+#     This means a paragraph is never misleadingly colored all-blue just
+#     because one of its sentences happens to match boilerplate.
+#
+#   How runs are colored:
+#     Word paragraphs are made up of runs (contiguous formatted text chunks).
+#     We walk each run, track its starting character position within the
+#     paragraph, look up which sentence that position belongs to, and apply
+#     the appropriate color. This avoids splitting runs in the XML (complex)
+#     while still producing accurate per-sentence coloring in the output.
+#     In practice Word creates run boundaries at spaces and punctuation, so
+#     runs rarely span sentence boundaries.
+#
+#   Bullet / list handling:
+#     paragraph.text returns only the stored text; bullet characters and list
+#     numbers are rendered by the list style and are NOT in the text string.
+#     A bullet-point paragraph and a plain paragraph with identical wording
+#     produce identical paragraph.text values and match correctly.
 #
 #   Whitespace normalization:
-#     All text is normalized before comparison: runs of whitespace (spaces,
-#     tabs, non-breaking spaces) are collapsed to a single space and leading /
-#     trailing whitespace is stripped. This prevents invisible formatting
-#     differences (extra spaces, tab characters, different line endings)
-#     from causing valid matches to be missed.
-#
-# Match color:
-#   Paragraphs whose text (or any contained sentence) verbatim matches the
-#   section boilerplate are recolored from green to blue (#0070C0).
-#   Paragraphs with no match stay green.
+#     All text is normalized before comparison (tabs, multiple spaces, and
+#     non-breaking spaces collapsed to one space). The raw text and run
+#     structure are never modified — normalization is only used for lookup.
 # =============================================================================
 
 import re
@@ -60,21 +62,21 @@ MIGRATED_CONTENT_COLOR     = RGBColor(0x00, 0xB0, 0x50)   # #00B050 — green
 MIGRATED_CONTENT_COLOR_HEX = "00B050"
 BOILERPLATE_MATCH_COLOR    = RGBColor(0x00, 0x70, 0xC0)   # #0070C0 — blue
 
-# Regex that matches one or more whitespace characters (including non-breaking
-# spaces \xa0 and tabs) so all of them collapse to a single regular space.
+# Collapses any run of whitespace (including tabs and non-breaking spaces)
+# to a single regular space. Applied before every comparison.
 _WHITESPACE_RE = re.compile(r'[\s\xa0]+')
 
-# Regex used to split normalized text into individual sentences.
-# Splits after any sentence-ending punctuation (. ! ?) that is followed by
-# one or more whitespace characters. This handles "Sentence one. Sentence two."
-# as well as exclamations and questions.
+# Splits text at sentence boundaries: matches whitespace that follows a
+# sentence-ending character (. ! ?). The lookbehind keeps the punctuation
+# attached to its sentence; the whitespace is consumed by the match so
+# the next sentence span starts cleanly.
 _SENTENCE_SPLIT_RE = re.compile(r'(?<=[.!?])\s+')
 
 
 class BoilerplateDetector:
     """
-    Recolors migrated (green) paragraphs blue when their text duplicates
-    the original boilerplate from the same destination section.
+    Recolors migrated (green) text blue at the sentence level when sentences
+    verbatim duplicate the original boilerplate from the same destination section.
 
     Usage:
         detector = BoilerplateDetector(
@@ -96,44 +98,38 @@ class BoilerplateDetector:
         """
         Execute the boilerplate detection pass and save the output document.
 
-        Returns the number of paragraphs recolored blue.
-        """
-        # Build the per-section boilerplate map from the template
-        section_boilerplate = self._extract_section_boilerplate()
+        Walks the output document paragraph by paragraph, tracking the current
+        section heading. For each fully-green paragraph, applies sentence-level
+        coloring: matching sentences → blue, non-matching → stay green.
 
+        Returns the total number of paragraphs where at least one sentence
+        was recolored blue.
+        """
+        section_boilerplate = self._extract_section_boilerplate()
         if not section_boilerplate:
             return 0
 
-        output_document = Document(str(self.output_path))
-        recolored_count = 0
-
-        # Walk the output document, tracking which section we are currently in.
-        # The section title resets every time we encounter a heading paragraph.
-        # Migrated (green) paragraphs are compared only against the sentence set
-        # for the section they belong to.
+        output_document       = Document(str(self.output_path))
+        recolored_count       = 0
         current_section_title = None
 
         for paragraph in output_document.paragraphs:
 
-            # ── Heading → update the active section ───────────────────────────
+            # Track the active section heading
             if self._is_heading(paragraph):
                 current_section_title = paragraph.text.strip()
                 continue
 
-            # ── Skip if no active section or paragraph is not green ───────────
             if current_section_title is None:
                 continue
             if not self._paragraph_is_fully_green(paragraph):
                 continue
 
-            # ── Look up this section's boilerplate sentences ───────────────────
             section_sentences = section_boilerplate.get(current_section_title)
             if not section_sentences:
                 continue
 
-            # ── Compare paragraph against the section boilerplate ─────────────
-            if self._matches_boilerplate(paragraph.text, section_sentences):
-                self._recolor_paragraph_runs(paragraph, BOILERPLATE_MATCH_COLOR)
+            if self._apply_sentence_colors(paragraph, section_sentences):
                 recolored_count += 1
 
         if recolored_count > 0:
@@ -142,27 +138,25 @@ class BoilerplateDetector:
         return recolored_count
 
     # =========================================================================
-    # Template parsing — build per-section sentence map
+    # Template parsing
     # =========================================================================
 
     def _extract_section_boilerplate(self) -> dict[str, set[str]]:
         """
-        Parse the destination template and build a mapping of:
-            section heading title → set of normalized sentences
+        Parse the destination template and build:
+            { section_heading_title: set_of_normalized_sentences }
 
-        Each non-heading paragraph contributes:
-          - Its full normalized text as one entry
-          - Each individual sentence (split on punctuation) as separate entries
-
-        This means the lookup can match both whole-paragraph content and
-        individual sentences that appear inside longer paragraphs.
+        Each non-heading paragraph contributes its full normalized text AND
+        each individual sentence extracted from it. This lets the detector
+        match both whole-paragraph copies and individual sentences that
+        appear inside longer template paragraphs.
 
         Bullet / list items are included automatically because paragraph.text
-        returns the text content without any bullet character or list number.
+        does not contain bullet characters or list numbers.
         """
-        template_document  = Document(str(self.template_path))
+        template_document   = Document(str(self.template_path))
         section_boilerplate: dict[str, set[str]] = {}
-        current_section = None
+        current_section     = None
 
         for paragraph in template_document.paragraphs:
 
@@ -179,58 +173,127 @@ class BoilerplateDetector:
             if not normalized:
                 continue
 
-            # Add the whole paragraph as one lookup entry
             section_boilerplate[current_section].add(normalized)
-
-            # Also add each individual sentence so that a migrated paragraph
-            # whose text equals just one sentence from a multi-sentence
-            # template paragraph is still detected.
             for sentence in _split_sentences(normalized):
                 section_boilerplate[current_section].add(sentence)
 
         return section_boilerplate
 
     # =========================================================================
-    # Matching
+    # Sentence-level coloring
     # =========================================================================
 
-    def _matches_boilerplate(
+    def _apply_sentence_colors(
         self,
-        paragraph_text:   str,
+        paragraph,
         section_sentences: set[str],
     ) -> bool:
         """
-        Return True if the paragraph text (or any of its individual sentences)
-        exactly matches an entry in the section's boilerplate sentence set.
+        Color each sentence in a green paragraph independently:
+          - Sentences that match the section boilerplate → blue
+          - Sentences that do not match                  → stay green
 
-        Two-pass check:
-          Pass 1 — whole paragraph: catches paragraphs that are verbatim
-                   copies of a full template paragraph.
-          Pass 2 — sentence by sentence: catches paragraphs that contain
-                   one or more boilerplate sentences mixed with new content.
-                   A single matching sentence is enough to flag the paragraph,
-                   because even partial verbatim reuse warrants user review.
+        Both colors can appear in the same paragraph, so a paragraph that
+        has been partially customized (e.g. program name changed in one
+        sentence) is not misleadingly shown as entirely boilerplate.
 
-        All comparisons use normalized text so whitespace differences do not
-        cause valid matches to be missed.
+        Implementation:
+          Build a character-span color map for the paragraph text, then walk
+          each run and assign it the color of the sentence its start position
+          falls within. This avoids XML run-splitting while producing accurate
+          per-sentence coloring for the vast majority of documents (Word rarely
+          creates runs that span sentence boundaries).
+
+        Returns True if at least one sentence was colored blue.
         """
-        normalized = _normalize(paragraph_text)
-        if not normalized:
+        color_map = self._build_sentence_color_map(
+            paragraph.text,
+            section_sentences,
+        )
+
+        if not color_map:
             return False
 
-        # Pass 1 — full paragraph match
-        if normalized in section_sentences:
+        any_blue = any(color is BOILERPLATE_MATCH_COLOR for _, _, color in color_map)
+        if not any_blue:
+            return False
+
+        all_blue = all(color is BOILERPLATE_MATCH_COLOR for _, _, color in color_map)
+
+        if all_blue:
+            # Every sentence is boilerplate — simple whole-paragraph recolor
+            for run in paragraph.runs:
+                run.font.color.rgb = BOILERPLATE_MATCH_COLOR
             return True
 
-        # Pass 2 — individual sentence match
-        for sentence in _split_sentences(normalized):
-            if sentence in section_sentences:
-                return True
+        # Mixed paragraph — color each run based on which sentence it starts in
+        current_char_pos = 0
+        for run in paragraph.runs:
+            if run.text:
+                run.font.color.rgb = self._color_for_position(
+                    current_char_pos, color_map
+                )
+                current_char_pos += len(run.text)
 
-        return False
+        return True
+
+    def _build_sentence_color_map(
+        self,
+        raw_text:         str,
+        section_sentences: set[str],
+    ) -> list[tuple[int, int, RGBColor]]:
+        """
+        Return a list of (start, end, color) spans covering the full raw_text.
+
+        Each span corresponds to one sentence (including its trailing
+        whitespace so spans are contiguous and cover the entire string).
+        The color is BOILERPLATE_MATCH_COLOR if the normalized sentence text
+        is in section_sentences, otherwise MIGRATED_CONTENT_COLOR.
+
+        Normalization is applied only for the set lookup — raw_text positions
+        are preserved so they map correctly onto run character offsets.
+        """
+        result   = []
+        last_end = 0
+
+        for match in _SENTENCE_SPLIT_RE.finditer(raw_text):
+            sentence = _normalize(raw_text[last_end : match.start()])
+            color    = (
+                BOILERPLATE_MATCH_COLOR
+                if sentence in section_sentences
+                else MIGRATED_CONTENT_COLOR
+            )
+            result.append((last_end, match.end(), color))
+            last_end = match.end()
+
+        # Final sentence — no trailing split point
+        if last_end < len(raw_text):
+            sentence = _normalize(raw_text[last_end:])
+            color    = (
+                BOILERPLATE_MATCH_COLOR
+                if sentence in section_sentences
+                else MIGRATED_CONTENT_COLOR
+            )
+            result.append((last_end, len(raw_text), color))
+
+        return result
+
+    @staticmethod
+    def _color_for_position(
+        char_pos: int,
+        color_map: list[tuple[int, int, RGBColor]],
+    ) -> RGBColor:
+        """
+        Return the color assigned to the sentence that contains char_pos.
+        Falls back to MIGRATED_CONTENT_COLOR (green) if no span matches.
+        """
+        for span_start, span_end, color in color_map:
+            if span_start <= char_pos < span_end:
+                return color
+        return MIGRATED_CONTENT_COLOR
 
     # =========================================================================
-    # Green paragraph detection
+    # Paragraph inspection helpers
     # =========================================================================
 
     def _is_heading(self, paragraph) -> bool:
@@ -242,12 +305,12 @@ class BoilerplateDetector:
 
     def _paragraph_is_fully_green(self, paragraph) -> bool:
         """
-        Return True if every text-bearing run in the paragraph carries the
-        migrated content green color as an explicit XML w:color attribute.
+        Return True if every text-bearing run carries the migrated green color
+        as an explicit XML w:color attribute.
 
-        Reads the XML directly rather than using the python-docx color API
-        because run.font.color.rgb raises AttributeError for inherited or
-        theme-based colors, which would cause valid green runs to be skipped.
+        Reads XML directly rather than using font.color.rgb because the
+        python-docx API raises AttributeError for inherited / theme colors,
+        which would incorrectly exclude valid green paragraphs.
         """
         text_bearing_runs = [run for run in paragraph.runs if run.text.strip()]
 
@@ -260,19 +323,13 @@ class BoilerplateDetector:
             rpr = run._element.find(qn("w:rPr"))
             if rpr is None:
                 return False
-
             color_elem = rpr.find(qn("w:color"))
             if color_elem is None:
                 return False
-
             if color_elem.get(qn("w:val"), "").upper() != target_hex:
                 return False
 
         return True
-
-    # =========================================================================
-    # Recoloring
-    # =========================================================================
 
     def _recolor_paragraph_runs(self, paragraph, new_color: RGBColor):
         """Set every run in the paragraph to new_color."""
@@ -286,26 +343,16 @@ class BoilerplateDetector:
 
 def _normalize(text: str) -> str:
     """
-    Collapse all whitespace (including tabs and non-breaking spaces) to a
+    Collapse all whitespace (tabs, multiple spaces, non-breaking spaces) to a
     single space and strip leading / trailing whitespace.
-
-    Applied to both template sentences and migrated paragraph text before
-    any comparison so invisible formatting differences never cause a miss.
+    Used only for comparison — never applied to the document content itself.
     """
     return _WHITESPACE_RE.sub(" ", text).strip()
 
 
 def _split_sentences(text: str) -> list[str]:
     """
-    Split normalized text into individual sentences.
-
-    Splits on any sentence-ending punctuation (. ! ?) followed by whitespace.
-    Each resulting part is stripped; empty parts are discarded.
-
-    Examples:
-      "Sentence one. Sentence two."  → ["Sentence one.", "Sentence two."]
-      "Only one sentence"            → ["Only one sentence"]
-      "First! Second? Third."        → ["First!", "Second?", "Third."]
+    Split normalized text into individual sentences on . ! ? boundaries.
+    Empty parts are discarded.
     """
-    parts = _SENTENCE_SPLIT_RE.split(text)
-    return [p.strip() for p in parts if p.strip()]
+    return [p.strip() for p in _SENTENCE_SPLIT_RE.split(text) if p.strip()]
