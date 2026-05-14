@@ -47,7 +47,7 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from PyQt5.QtCore import QEvent, QObject, Qt, pyqtSignal
+from PyQt5.QtCore import QEvent, QObject, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui  import QColor, QFont
 
 from models.sections import (
@@ -156,7 +156,10 @@ class _SearchFocusFilter(QObject):
 
     def eventFilter(self, obj, event) -> bool:
         if event.type() == QEvent.FocusIn:
-            self._combo.lineEdit().clear()
+            # Defer the clear by one event-loop tick. Qt re-sets the line edit
+            # text with the current item value after FocusIn, so clearing
+            # synchronously here gets overwritten before the user sees it.
+            QTimer.singleShot(0, self._combo.lineEdit().clear)
         return False   # never consume — let Qt handle the event normally
 
 
