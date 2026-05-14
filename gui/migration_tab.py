@@ -101,13 +101,13 @@ class MigrationTab(QWidget):
         main_layout.setContentsMargins(12, 12, 12, 8)
         main_layout.setSpacing(10)
 
-        main_layout.addWidget(self._build_step1_group())
+        main_layout.addWidget(self._build_step1_group(), stretch=0)
 
         self._step2_group = self._build_step2_group()
-        main_layout.addWidget(self._step2_group)
+        main_layout.addWidget(self._step2_group, stretch=1)
 
         self._step3_group = self._build_step3_group()
-        main_layout.addWidget(self._step3_group)
+        main_layout.addWidget(self._step3_group, stretch=0)
 
         main_layout.addWidget(self._build_status_bar())
 
