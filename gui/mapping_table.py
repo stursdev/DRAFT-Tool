@@ -186,9 +186,14 @@ class _SearchLineEdit(QLineEdit):
         for i in range(self._combo.count()):
             if self._combo.itemText(i) == text:
                 return   # valid selection — nothing to do
-        # Let Qt handle the text update via its internal C++ path —
-        # setCurrentIndex calls lineEdit()->setText() directly, no signals needed.
-        self._combo.setCurrentIndex(self._last_valid[0])
+        idx = self._last_valid[0]
+        # setCurrentIndex is a no-op when the index hasn't changed (the text
+        # was cleared silently without updating currentIndex), so Qt never
+        # calls lineEdit->setText internally. Force the text update explicitly.
+        self._combo.setCurrentIndex(idx)
+        self.blockSignals(True)
+        self.setText(self._combo.itemText(idx))
+        self.blockSignals(False)
 
 
 class MappingTableWidget(QWidget):
