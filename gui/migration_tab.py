@@ -342,7 +342,7 @@ class MigrationTab(QWidget):
         # ── Boilerplate highlighting mode ──────────────────────────────────────
         # Label acts as a visible group heading and is referenced by the radio
         # buttons' accessible descriptions so screen readers have full context.
-        boilerplate_label = QLabel("Boilerplate Highlighting")
+        boilerplate_label = QLabel("Template Match Highlighting")
         boilerplate_label.setObjectName("boilerplate_mode_label")
         output_grid.addWidget(boilerplate_label, 1, 0, 1, 4)
 
