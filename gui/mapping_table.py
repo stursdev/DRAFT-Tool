@@ -156,11 +156,18 @@ class _SearchFocusFilter(QObject):
 
     def eventFilter(self, obj, event) -> bool:
         if event.type() == QEvent.FocusIn:
-            # Defer the clear by one event-loop tick. Qt re-sets the line edit
-            # text with the current item value after FocusIn, so clearing
-            # synchronously here gets overwritten before the user sees it.
-            QTimer.singleShot(0, self._combo.lineEdit().clear)
+            # Defer by one event-loop tick so Qt finishes its own focus-in
+            # handling first, then clear silently with signals blocked.
+            # Without blocking, the combo hears the textChanged signal and
+            # immediately re-sets the line edit to the current item text.
+            QTimer.singleShot(0, self._clear_silently)
         return False   # never consume — let Qt handle the event normally
+
+    def _clear_silently(self) -> None:
+        line_edit = self._combo.lineEdit()
+        line_edit.blockSignals(True)
+        line_edit.clear()
+        line_edit.blockSignals(False)
 
 
 class MappingTableWidget(QWidget):
