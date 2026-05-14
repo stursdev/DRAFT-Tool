@@ -145,7 +145,7 @@ class MainWindow(QMainWindow):
     """
 
     MINIMUM_WINDOW_WIDTH  = 960
-    MINIMUM_WINDOW_HEIGHT = 760
+    MINIMUM_WINDOW_HEIGHT = 860
 
     def __init__(self):
         super().__init__()
@@ -158,7 +158,7 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(self.MINIMUM_WINDOW_WIDTH, self.MINIMUM_WINDOW_HEIGHT)
         self.resize(
             self.MINIMUM_WINDOW_WIDTH  + 40,
-            self.MINIMUM_WINDOW_HEIGHT + 40,
+            self.MINIMUM_WINDOW_HEIGHT + 60,
         )
 
         # Application icon — used by the OS for the window title bar, dock /
