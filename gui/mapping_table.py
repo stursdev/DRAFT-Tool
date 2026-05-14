@@ -47,7 +47,7 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import QEvent, QObject, Qt, pyqtSignal
 from PyQt5.QtGui  import QColor, QFont
 
 from models.sections import (
@@ -141,6 +141,23 @@ ROW_COLORS = {
     MappingStatus.MANUAL:   QColor("#eff6ff"),   # Soft blue
     MappingStatus.SKIPPED:  QColor("#f3f4f6"),   # Soft grey
 }
+
+
+class _SearchFocusFilter(QObject):
+    """
+    Event filter installed on a combo's line edit.
+    Clears the field on focus-in so the user can type immediately
+    without having to manually select and delete the existing text.
+    """
+
+    def __init__(self, combo, parent=None):
+        super().__init__(parent)
+        self._combo = combo
+
+    def eventFilter(self, obj, event) -> bool:
+        if event.type() == QEvent.FocusIn:
+            self._combo.lineEdit().clear()
+        return False   # never consume — let Qt handle the event normally
 
 
 class MappingTableWidget(QWidget):
@@ -467,10 +484,14 @@ class MappingTableWidget(QWidget):
         """
         combo.setEditable(True)
         combo.setInsertPolicy(NoScrollComboBox.NoInsert)
-        combo.lineEdit().setPlaceholderText("Type to search…")
+        combo.lineEdit().setPlaceholderText("Search…")
         combo.lineEdit().setStyleSheet(
             "QLineEdit { border: none; background: transparent; padding: 2px 4px; }"
         )
+
+        # Clear the field on focus-in — stored on the combo to prevent GC
+        combo._search_focus_filter = _SearchFocusFilter(combo)
+        combo.lineEdit().installEventFilter(combo._search_focus_filter)
 
         # Completer uses only the clean section titles from the full list
         section_titles = [s.display_title for s in self._dest_sections]
