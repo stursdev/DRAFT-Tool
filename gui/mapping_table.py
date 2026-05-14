@@ -37,6 +37,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
+    QCompleter,
     QHeaderView,
     QHBoxLayout,
     QLabel,
@@ -447,7 +448,67 @@ class MappingTableWidget(QWidget):
             lambda _signal_index, r=row_index: self._on_destination_changed(r)
         )
 
+        self._make_combo_searchable(combo)
+
         return combo
+
+    def _make_combo_searchable(self, combo: NoScrollComboBox) -> None:
+        """
+        Make the destination combo searchable by typing.
+
+        Enables the line edit and attaches a QCompleter that filters on
+        any substring (MatchContains, case-insensitive). The completer
+        only searches clean section titles — not sentinels or suggestion
+        items with the ✨ prefix — so results are unambiguous.
+
+        On focus-out: if the text in the line edit does not match any
+        combo item exactly, the selection silently reverts to the last
+        confirmed valid index so invalid free-text is never committed.
+        """
+        combo.setEditable(True)
+        combo.setInsertPolicy(NoScrollComboBox.NoInsert)
+        combo.lineEdit().setPlaceholderText("Type to search…")
+        combo.lineEdit().setStyleSheet(
+            "QLineEdit { border: none; background: transparent; padding: 2px 4px; }"
+        )
+
+        # Completer uses only the clean section titles from the full list
+        section_titles = [s.display_title for s in self._dest_sections]
+        completer = QCompleter(section_titles, combo)
+        completer.setFilterMode(Qt.MatchContains)
+        completer.setCaseSensitivity(Qt.CaseInsensitive)
+        completer.setCompletionMode(QCompleter.PopupCompletion)
+        combo.setCompleter(completer)
+
+        # When the user picks a completion, find and set the matching combo index
+        def on_completion_activated(text: str) -> None:
+            for i in range(combo.count()):
+                if combo.itemText(i) == text:
+                    combo.setCurrentIndex(i)
+                    return
+
+        completer.activated.connect(on_completion_activated)
+
+        # Track the last confirmed valid index so we can revert on bad input
+        last_valid = [combo.currentIndex()]
+
+        def on_index_changed(idx: int) -> None:
+            if idx >= 0:
+                last_valid[0] = idx
+
+        combo.currentIndexChanged.connect(on_index_changed)
+
+        def on_editing_finished() -> None:
+            text = combo.currentText()
+            for i in range(combo.count()):
+                if combo.itemText(i) == text:
+                    return  # text matches an existing item — nothing to do
+            # No match — silently revert to the last valid selection
+            combo.blockSignals(True)
+            combo.setCurrentIndex(last_valid[0])
+            combo.blockSignals(False)
+
+        combo.lineEdit().editingFinished.connect(on_editing_finished)
 
     def _insert_suggestion_items(
         self,
