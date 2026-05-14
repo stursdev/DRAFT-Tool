@@ -146,28 +146,39 @@ ROW_COLORS = {
 class _SearchFocusFilter(QObject):
     """
     Event filter installed on a combo's line edit.
-    Clears the field on focus-in so the user can type immediately
-    without having to manually select and delete the existing text.
+
+    FocusIn  — clears the field so the user can type immediately.
+               Both the combo AND line edit signals are blocked during the
+               clear; blocking only the line edit is not enough because Qt
+               can re-set the text from the combo level directly.
+               Deferred one event-loop tick so Qt finishes its own
+               focus-in handling before we wipe the text.
+
+    FocusOut — triggers the revert check so invalid / empty text never
+               persists after the user clicks away. editingFinished alone
+               is not reliable cross-platform for this.
     """
 
-    def __init__(self, combo, parent=None):
+    def __init__(self, combo, on_revert, parent=None):
         super().__init__(parent)
-        self._combo = combo
+        self._combo    = combo
+        self._on_revert = on_revert
 
     def eventFilter(self, obj, event) -> bool:
         if event.type() == QEvent.FocusIn:
-            # Defer by one event-loop tick so Qt finishes its own focus-in
-            # handling first, then clear silently with signals blocked.
-            # Without blocking, the combo hears the textChanged signal and
-            # immediately re-sets the line edit to the current item text.
             QTimer.singleShot(0, self._clear_silently)
-        return False   # never consume — let Qt handle the event normally
+        elif event.type() == QEvent.FocusOut:
+            QTimer.singleShot(0, self._on_revert)
+        return False
 
     def _clear_silently(self) -> None:
-        line_edit = self._combo.lineEdit()
+        combo     = self._combo
+        line_edit = combo.lineEdit()
+        combo.blockSignals(True)
         line_edit.blockSignals(True)
         line_edit.clear()
         line_edit.blockSignals(False)
+        combo.blockSignals(False)
 
 
 class MappingTableWidget(QWidget):
@@ -499,10 +510,6 @@ class MappingTableWidget(QWidget):
             "QLineEdit { border: none; background: transparent; padding: 2px 4px; }"
         )
 
-        # Clear the field on focus-in — stored on the combo to prevent GC
-        combo._search_focus_filter = _SearchFocusFilter(combo)
-        combo.lineEdit().installEventFilter(combo._search_focus_filter)
-
         # Completer uses only the clean section titles from the full list
         section_titles = [s.display_title for s in self._dest_sections]
         completer = QCompleter(section_titles, combo)
@@ -529,17 +536,27 @@ class MappingTableWidget(QWidget):
 
         combo.currentIndexChanged.connect(on_index_changed)
 
-        def on_editing_finished() -> None:
+        def on_revert() -> None:
+            """Revert to last valid selection if current text isn't a real item."""
             text = combo.currentText()
             for i in range(combo.count()):
                 if combo.itemText(i) == text:
-                    return  # text matches an existing item — nothing to do
-            # No match — silently revert to the last valid selection
+                    return  # valid — nothing to do
+            idx = last_valid[0]
             combo.blockSignals(True)
-            combo.setCurrentIndex(last_valid[0])
+            combo.setCurrentIndex(idx)
+            # Explicitly restore line edit text — setCurrentIndex alone does not
+            # always update the line edit when signals are blocked (Windows).
+            combo.lineEdit().setText(combo.itemText(idx))
             combo.blockSignals(False)
 
-        combo.lineEdit().editingFinished.connect(on_editing_finished)
+        # editingFinished covers Enter key and some focus-out cases
+        combo.lineEdit().editingFinished.connect(on_revert)
+
+        # Install focus filter — clear on focus-in, revert on focus-out.
+        # Stored on the combo to prevent the QObject from being garbage-collected.
+        combo._search_focus_filter = _SearchFocusFilter(combo, on_revert)
+        combo.lineEdit().installEventFilter(combo._search_focus_filter)
 
     def _insert_suggestion_items(
         self,
