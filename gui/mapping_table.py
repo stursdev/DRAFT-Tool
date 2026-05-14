@@ -148,17 +148,10 @@ class _SearchLineEdit(QLineEdit):
     """
     Custom line edit installed on the searchable destination combo.
 
-    Replaces the default QLineEdit via QComboBox.setLineEdit() so we get
-    true overrides of focusInEvent / focusOutEvent instead of event
-    filters — these are more reliable cross-platform.
-
-    On focus-in : clears the field after a short delay (50 ms) so Qt
-                  finishes its own focus / completer initialisation first.
-                  self.blockSignals(True) during the clear prevents the
-                  combo's internal textEdited slot from re-setting the text.
-
-    On focus-out: reverts the field to the last confirmed valid selection
-                  if the current text does not match any combo item.
+    On focus-out: if the text doesn't match any combo item (user typed
+    something but didn't pick a completion), reverts to the last confirmed
+    valid selection via setEditText so the field never shows a dangling
+    partial search string.
     """
 
     def __init__(self, combo, last_valid: list):
@@ -166,34 +159,22 @@ class _SearchLineEdit(QLineEdit):
         self._combo      = combo
         self._last_valid = last_valid   # mutable [index] shared with outer scope
 
-    def focusInEvent(self, event):
-        super().focusInEvent(event)
-        QTimer.singleShot(50, self._clear_for_search)
-
-    def _clear_for_search(self):
-        if not self.hasFocus():
-            return   # focus already moved away — skip
-        self.blockSignals(True)
-        self.clear()
-        self.blockSignals(False)
-
     def focusOutEvent(self, event):
         super().focusOutEvent(event)
-        QTimer.singleShot(0, self._revert_if_invalid)
+        QTimer.singleShot(150, self._revert_if_invalid)
 
     def _revert_if_invalid(self):
         text = self.text()
-        for i in range(self._combo.count()):
-            if self._combo.itemText(i) == text:
-                return   # valid selection — nothing to do
+        # Separators return "" from itemText() — skip the validity check when
+        # text is empty so an empty field always reverts instead of matching a
+        # separator and returning early.
+        if text:
+            for i in range(self._combo.count()):
+                if self._combo.itemText(i) == text:
+                    return   # current text is a valid item — nothing to do
         idx = self._last_valid[0]
-        # setCurrentIndex is a no-op when the index hasn't changed (the text
-        # was cleared silently without updating currentIndex), so Qt never
-        # calls lineEdit->setText internally. Force the text update explicitly.
-        self._combo.setCurrentIndex(idx)
-        self.blockSignals(True)
-        self.setText(self._combo.itemText(idx))
-        self.blockSignals(False)
+        if idx >= 0:
+            self._combo.setEditText(self._combo.itemText(idx))
 
 
 class MappingTableWidget(QWidget):
@@ -510,8 +491,8 @@ class MappingTableWidget(QWidget):
         Make the destination combo searchable by typing.
 
         Installs a _SearchLineEdit (custom QLineEdit subclass) via
-        setLineEdit() so focus-in clear and focus-out revert are handled
-        by true method overrides rather than event filters.
+        setLineEdit() so focus-out revert is handled by a true method
+        override rather than an event filter.
 
         The QCompleter filters on any substring (MatchContains,
         case-insensitive) using only clean section titles — not sentinels
@@ -532,6 +513,7 @@ class MappingTableWidget(QWidget):
             "QLineEdit { border: none; background: transparent; padding: 2px 4px; }"
         )
         combo.setLineEdit(search_le)
+        combo._search_line_edit = search_le   # keep Python wrapper alive
 
         # Completer must be set AFTER setLineEdit so Qt wires it to our line edit
         section_titles = [s.display_title for s in self._dest_sections]
