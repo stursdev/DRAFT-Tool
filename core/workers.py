@@ -29,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from PyQt5.QtCore import QThread, pyqtSignal
 
 from core.auto_mapper          import AutoMapper
-from core.boilerplate_detector import BoilerplateDetector
+from core.boilerplate_detector import BoilerplateDetector, HIGHLIGHT_SENTENCES
 from core.content_migrator     import ContentMigrator, MigrationReport
 from core.document_parser      import DocumentParser
 from core.audit_log            import MigrationReportExporter
@@ -129,21 +129,20 @@ class MigrateWorker(QThread):
 
     def __init__(
         self,
-        migrator:           ContentMigrator,
-        report_exporter:    MigrationReportExporter,
-        export_report:      bool,
-        report_output_path: str,
-        template_path:      str,
+        migrator:            ContentMigrator,
+        report_exporter:     MigrationReportExporter,
+        export_report:       bool,
+        report_output_path:  str,
+        template_path:       str,
+        boilerplate_mode:    str = HIGHLIGHT_SENTENCES,
     ):
         super().__init__()
         self.migrator            = migrator
         self.report_exporter     = report_exporter
         self.export_report       = export_report
         self.report_output_path  = report_output_path
-
-        # The original destination template path — needed by BoilerplateDetector
-        # to extract boilerplate sentences for comparison
-        self.template_path = template_path
+        self.template_path       = template_path
+        self.boilerplate_mode    = boilerplate_mode
 
     def run(self):
         """
@@ -163,6 +162,7 @@ class MigrateWorker(QThread):
             detector = BoilerplateDetector(
                 template_path=self.template_path,
                 output_path=migration_report.output_path,
+                mode=self.boilerplate_mode,
             )
             boilerplate_match_count = detector.run()
             self.boilerplate_done.emit(boilerplate_match_count)

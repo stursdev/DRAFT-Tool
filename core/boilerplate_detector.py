@@ -62,6 +62,19 @@ MIGRATED_CONTENT_COLOR     = RGBColor(0x00, 0xB0, 0x50)   # #00B050 — green
 MIGRATED_CONTENT_COLOR_HEX = "00B050"
 BOILERPLATE_MATCH_COLOR    = RGBColor(0x00, 0x70, 0xC0)   # #0070C0 — blue
 
+# Boilerplate detection modes — passed as the `mode` argument to BoilerplateDetector.
+#
+#   SENTENCE  — color only the individual sentences that match boilerplate blue;
+#               non-matching sentences in the same paragraph stay green.
+#               Best for reviewing partially-customized paragraphs.
+#
+#   PARAGRAPH — color the entire paragraph blue if any sentence within it
+#               matches boilerplate. Faster to scan at a glance but can flag
+#               paragraphs that have been partially customized.
+#
+HIGHLIGHT_SENTENCES = "sentence"
+HIGHLIGHT_PARAGRAPH = "paragraph"
+
 # Collapses any run of whitespace (including tabs and non-breaking spaces)
 # to a single regular space. Applied before every comparison.
 _WHITESPACE_RE = re.compile(r'[\s\xa0]+')
@@ -86,9 +99,17 @@ class BoilerplateDetector:
         match_count = detector.run()
     """
 
-    def __init__(self, template_path: str, output_path: str):
+    def __init__(
+        self,
+        template_path: str,
+        output_path:   str,
+        mode:          str = HIGHLIGHT_SENTENCES,
+    ):
         self.template_path = Path(template_path)
         self.output_path   = Path(output_path)
+        # HIGHLIGHT_SENTENCES — color individual matching sentences blue
+        # HIGHLIGHT_PARAGRAPH — color the whole paragraph blue if any sentence matches
+        self.mode = mode
 
     # =========================================================================
     # Public API
@@ -129,8 +150,15 @@ class BoilerplateDetector:
             if not section_sentences:
                 continue
 
-            if self._apply_sentence_colors(paragraph, section_sentences):
-                recolored_count += 1
+            if self.mode == HIGHLIGHT_PARAGRAPH:
+                # Paragraph mode: whole paragraph turns blue if any sentence matches
+                if self._any_sentence_matches(paragraph.text, section_sentences):
+                    self._recolor_paragraph_runs(paragraph, BOILERPLATE_MATCH_COLOR)
+                    recolored_count += 1
+            else:
+                # Sentence mode (default): color only the matching sentences
+                if self._apply_sentence_colors(paragraph, section_sentences):
+                    recolored_count += 1
 
         if recolored_count > 0:
             output_document.save(str(self.output_path))
@@ -182,6 +210,23 @@ class BoilerplateDetector:
     # =========================================================================
     # Sentence-level coloring
     # =========================================================================
+
+    def _any_sentence_matches(
+        self,
+        paragraph_text:    str,
+        section_sentences: set[str],
+    ) -> bool:
+        """
+        Return True if the full paragraph text OR any individual sentence
+        within it exactly matches an entry in section_sentences.
+        Used by HIGHLIGHT_PARAGRAPH mode.
+        """
+        normalized = _normalize(paragraph_text)
+        if not normalized:
+            return False
+        if normalized in section_sentences:
+            return True
+        return any(s in section_sentences for s in _split_sentences(normalized))
 
     def _apply_sentence_colors(
         self,

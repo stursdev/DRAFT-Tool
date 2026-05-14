@@ -32,6 +32,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from PyQt5.QtWidgets import (
+    QButtonGroup,
     QCheckBox,
     QFileDialog,
     QFrame,
@@ -43,17 +44,19 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QRadioButton,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 from PyQt5.QtCore import Qt
 
-from core.audit_log        import MigrationReportExporter
-from core.content_migrator import ContentMigrator
-from core.document_parser  import DocumentParser
-from core.workers          import AnalyzeWorker, MigrateWorker
-from models.sections       import MappingResult, MappingStatus, MigrationMode, Section
+from core.audit_log          import MigrationReportExporter
+from core.boilerplate_detector import HIGHLIGHT_SENTENCES, HIGHLIGHT_PARAGRAPH
+from core.content_migrator   import ContentMigrator
+from core.document_parser    import DocumentParser
+from core.workers            import AnalyzeWorker, MigrateWorker
+from models.sections         import MappingResult, MappingStatus, MigrationMode, Section
 from gui.mapping_table     import MappingTableWidget
 from gui.widgets           import SectionLabel
 
@@ -336,15 +339,78 @@ class MigrationTab(QWidget):
         )
         output_grid.addWidget(self._export_report_checkbox, 0, 0, 1, 4)
 
+        # ── Boilerplate highlighting mode ──────────────────────────────────────
+        # Label acts as a visible group heading and is referenced by the radio
+        # buttons' accessible descriptions so screen readers have full context.
+        boilerplate_label = QLabel("Boilerplate Highlighting")
+        boilerplate_label.setObjectName("boilerplate_mode_label")
+        output_grid.addWidget(boilerplate_label, 1, 0, 1, 4)
+
+        self._boilerplate_sentence_radio = QRadioButton("Matching sentences only")
+        self._boilerplate_sentence_radio.setChecked(True)   # Default — most precise
+        self._boilerplate_sentence_radio.setToolTip(
+            "Color only the individual sentences that verbatim match the template "
+            "boilerplate blue. Sentences that have been customized stay green, "
+            "even if they are in the same paragraph as a matching sentence."
+        )
+        self._boilerplate_sentence_radio.setAccessibleName(
+            "Highlight matching sentences only"
+        )
+        self._boilerplate_sentence_radio.setAccessibleDescription(
+            "When selected, only the exact sentences that match the destination "
+            "template boilerplate are colored blue. Other sentences in the same "
+            "paragraph remain green, making partial customization clearly visible."
+        )
+
+        self._boilerplate_paragraph_radio = QRadioButton(
+            "Entire paragraph if any sentence matches"
+        )
+        self._boilerplate_paragraph_radio.setToolTip(
+            "Color the entire paragraph blue if it contains any sentence that "
+            "verbatim matches the template boilerplate. Easier to scan at a "
+            "glance but may flag paragraphs that have been partially customized."
+        )
+        self._boilerplate_paragraph_radio.setAccessibleName(
+            "Highlight entire paragraph if any sentence matches"
+        )
+        self._boilerplate_paragraph_radio.setAccessibleDescription(
+            "When selected, the entire paragraph is colored blue if any sentence "
+            "within it matches the destination template boilerplate. Use this for "
+            "a quick visual scan when per-sentence precision is not needed."
+        )
+
+        # QButtonGroup enforces mutual exclusivity and gives assistive technology
+        # a single logical group to navigate rather than two independent buttons.
+        self._boilerplate_mode_group = QButtonGroup(self)
+        self._boilerplate_mode_group.addButton(
+            self._boilerplate_sentence_radio, 0
+        )
+        self._boilerplate_mode_group.addButton(
+            self._boilerplate_paragraph_radio, 1
+        )
+
+        boilerplate_radio_row = QHBoxLayout()
+        boilerplate_radio_row.setSpacing(16)
+        boilerplate_radio_row.addWidget(self._boilerplate_sentence_radio)
+        boilerplate_radio_row.addWidget(self._boilerplate_paragraph_radio)
+        boilerplate_radio_row.addStretch()
+        output_grid.addLayout(boilerplate_radio_row, 2, 0, 1, 4)
+
+        # Thin separator before the file output fields
+        boilerplate_separator = QFrame()
+        boilerplate_separator.setFrameShape(QFrame.HLine)
+        boilerplate_separator.setFrameShadow(QFrame.Sunken)
+        output_grid.addWidget(boilerplate_separator, 3, 0, 1, 4)
+
         # Output folder
-        output_grid.addWidget(QLabel("Output Folder"), 1, 0)
+        output_grid.addWidget(QLabel("Output Folder"), 4, 0)
         self._output_folder_input = QLineEdit()
         self._output_folder_input.setPlaceholderText("Select output folder…")
         self._output_folder_input.setAccessibleName("Output folder path")
         self._output_folder_input.setAccessibleDescription(
             "The folder where the migrated document and optional report will be saved"
         )
-        output_grid.addWidget(self._output_folder_input, 1, 1, 1, 2)
+        output_grid.addWidget(self._output_folder_input, 4, 1, 1, 2)
 
         folder_browse_button = QPushButton("📂")
         folder_browse_button.setFixedWidth(36)
@@ -354,10 +420,10 @@ class MigrationTab(QWidget):
             "Open a folder browser to choose where the migrated document will be saved"
         )
         folder_browse_button.clicked.connect(self._on_browse_output_folder_clicked)
-        output_grid.addWidget(folder_browse_button, 1, 3)
+        output_grid.addWidget(folder_browse_button, 4, 3)
 
         # Output file name
-        output_grid.addWidget(QLabel("File Name"), 2, 0)
+        output_grid.addWidget(QLabel("File Name"), 5, 0)
         filename_row = QHBoxLayout()
         self._output_filename_input = QLineEdit()
         self._output_filename_input.setPlaceholderText("output_filename")
@@ -367,7 +433,7 @@ class MigrationTab(QWidget):
         )
         filename_row.addWidget(self._output_filename_input)
         filename_row.addWidget(QLabel(".docx"))
-        output_grid.addLayout(filename_row, 2, 1, 1, 3)
+        output_grid.addLayout(filename_row, 5, 1, 1, 3)
 
         output_grid.setColumnStretch(1, 1)
         layout.addLayout(output_grid)
@@ -1193,12 +1259,19 @@ class MigrationTab(QWidget):
         self._migration_progress_bar.setVisible(True)
         self._migration_status_label.setText("Running migration…")
 
+        boilerplate_mode = (
+            HIGHLIGHT_SENTENCES
+            if self._boilerplate_sentence_radio.isChecked()
+            else HIGHLIGHT_PARAGRAPH
+        )
+
         self._migrate_worker = MigrateWorker(
             migrator=migrator,
             report_exporter=report_exporter,
             export_report=self._export_report_checkbox.isChecked(),
             report_output_path=report_csv_path,
             template_path=self._dest_file_path,
+            boilerplate_mode=boilerplate_mode,
         )
         self._migrate_worker.progress.connect(self._migration_status_label.setText)
         self._migrate_worker.finished.connect(self._on_migration_finished)
