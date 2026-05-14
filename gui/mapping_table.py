@@ -247,7 +247,7 @@ class MappingTableWidget(QWidget):
             "Source Section",
             "Destination Section",
             "Mode",
-            "Conf.",
+            "Match",
             "Status",
         ])
 
