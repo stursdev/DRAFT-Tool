@@ -18,22 +18,19 @@
 #     exactly match the section boilerplate are colored blue; sentences that
 #     do not match stay green. Both colors can appear in the same paragraph.
 #
-#     Example — paragraph with 3 sentences:
-#       "The ABC program provides support.    ← program name changed → green
-#        The contractor shall deliver reports. ← verbatim boilerplate  → blue
-#        Deliverables are defined in SOW."     ← verbatim boilerplate  → blue
-#
-#     This means a paragraph is never misleadingly colored all-blue just
-#     because one of its sentences happens to match boilerplate.
+#     Example — paragraph with 2 sentences:
+#       "The contractor shall deliver reports. ← verbatim boilerplate  → blue
+#        Deliverables are defined in SOW."     ← customised content    → green
 #
 #   How runs are colored:
-#     Word paragraphs are made up of runs (contiguous formatted text chunks).
-#     We walk each run, track its starting character position within the
-#     paragraph, look up which sentence that position belongs to, and apply
-#     the appropriate color. This avoids splitting runs in the XML (complex)
-#     while still producing accurate per-sentence coloring in the output.
-#     In practice Word creates run boundaries at spaces and punctuation, so
-#     runs rarely span sentence boundaries.
+#     Word stores paragraph text as a sequence of runs (<w:r> elements).
+#     Runs can straddle sentence boundaries — e.g. "…performance. Probability
+#     of an undesired event" may be one run even though it spans two sentences.
+#     To handle this accurately we split any run that crosses a sentence
+#     boundary in the XML before applying colors, so each resulting run
+#     belongs entirely to one sentence. _split_and_color_run does this by
+#     deep-copying the original run element (preserving all formatting) and
+#     inserting the new elements immediately after the original.
 #
 #   Bullet / list handling:
 #     paragraph.text returns only the stored text; bullet characters and list
@@ -47,6 +44,7 @@
 #     structure are never modified — normalization is only used for lookup.
 # =============================================================================
 
+import copy
 import re
 import sys
 from pathlib import Path
@@ -238,16 +236,8 @@ class BoilerplateDetector:
           - Sentences that match the section boilerplate → blue
           - Sentences that do not match                  → stay green
 
-        Both colors can appear in the same paragraph, so a paragraph that
-        has been partially customized (e.g. program name changed in one
-        sentence) is not misleadingly shown as entirely boilerplate.
-
-        Implementation:
-          Build a character-span color map for the paragraph text, then walk
-          each run and assign it the color of the sentence its start position
-          falls within. This avoids XML run-splitting while producing accurate
-          per-sentence coloring for the vast majority of documents (Word rarely
-          creates runs that span sentence boundaries).
+        Runs that straddle a sentence boundary are split in the XML at the
+        boundary so each resulting segment is colored independently.
 
         Returns True if at least one sentence was colored blue.
         """
@@ -271,16 +261,64 @@ class BoilerplateDetector:
                 run.font.color.rgb = BOILERPLATE_MATCH_COLOR
             return True
 
-        # Mixed paragraph — color each run based on which sentence it starts in
-        current_char_pos = 0
-        for run in paragraph.runs:
-            if run.text:
-                run.font.color.rgb = self._color_for_position(
-                    current_char_pos, color_map
-                )
-                current_char_pos += len(run.text)
+        # Global positions where the color changes (start of each span after the first)
+        boundaries = {span[0] for span in color_map[1:]}
+
+        char_pos = 0
+        for run in list(paragraph.runs):
+            if not run.text:
+                continue
+
+            run_len = len(run.text)   # capture before any XML modification
+            run_end = char_pos + run_len
+
+            # Sentence boundaries that fall strictly inside this run (local offsets)
+            inner = sorted(b - char_pos for b in boundaries if char_pos < b < run_end)
+
+            if not inner:
+                run.font.color.rgb = self._color_for_position(char_pos, color_map)
+            else:
+                self._split_and_color_run(run, inner, char_pos, color_map)
+
+            char_pos = run_end
 
         return True
+
+    def _split_and_color_run(
+        self,
+        run,
+        split_positions: list[int],
+        run_global_start: int,
+        color_map: list[tuple[int, int, RGBColor]],
+    ) -> None:
+        """
+        Split a run at local character offsets and color each segment.
+
+        The original run element is modified in-place for the first segment.
+        Deep-copies are inserted immediately after it for each subsequent
+        segment, preserving all run formatting (bold, italic, font, etc.).
+        """
+        text = run.text
+        cuts = [0] + split_positions + [len(text)]
+        segments = [(cuts[i], cuts[i + 1]) for i in range(len(cuts) - 1)]
+
+        original_elem = run._element
+        # Clone before any modification so every copy has the original formatting
+        clones = [copy.deepcopy(original_elem) for _ in segments[1:]]
+
+        # Update original run to hold only the first segment
+        _set_run_text(original_elem, text[segments[0][0] : segments[0][1]])
+        _set_run_color(original_elem, self._color_for_position(run_global_start, color_map))
+
+        # Insert remaining segments as new run elements after the original
+        insert_after = original_elem
+        for i, (seg_start, seg_end) in enumerate(segments[1:]):
+            seg_color = self._color_for_position(run_global_start + seg_start, color_map)
+            clone = clones[i]
+            _set_run_text(clone, text[seg_start:seg_end])
+            _set_run_color(clone, seg_color)
+            insert_after.addnext(clone)
+            insert_after = clone
 
     def _build_sentence_color_map(
         self,
@@ -401,3 +439,33 @@ def _split_sentences(text: str) -> list[str]:
     Empty parts are discarded.
     """
     return [p.strip() for p in _SENTENCE_SPLIT_RE.split(text) if p.strip()]
+
+
+# =============================================================================
+# Run XML helpers (used by _split_and_color_run)
+# =============================================================================
+
+_XML_SPACE = "{http://www.w3.org/XML/1998/namespace}space"
+
+
+def _set_run_text(run_elem, text: str) -> None:
+    """Update <w:t> on a run element, setting xml:space=preserve when needed."""
+    t = run_elem.find(qn("w:t"))
+    if t is None:
+        return
+    t.text = text
+    if text and (text[0] == " " or text[-1] == " "):
+        t.set(_XML_SPACE, "preserve")
+    elif _XML_SPACE in t.attrib:
+        del t.attrib[_XML_SPACE]
+
+
+def _set_run_color(run_elem, color: RGBColor) -> None:
+    """Set <w:color w:val> on a run element's existing <w:rPr>."""
+    rpr = run_elem.find(qn("w:rPr"))
+    if rpr is None:
+        return
+    color_elem = rpr.find(qn("w:color"))
+    if color_elem is None:
+        return
+    color_elem.set(qn("w:val"), str(color))
