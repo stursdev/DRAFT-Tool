@@ -59,7 +59,7 @@ def main():
     # taskbar/dock entry and what PyInstaller embeds as the .exe icon when
     # the app is packaged. Setting it on QApplication (not just the window)
     # ensures it propagates to all dialogs and child windows.
-    icon_path = Path(__file__).parent / "assets" / "app_icon.png"
+    icon_path = Path(__file__).parent / "assets" / "app_icon.ico"
     if icon_path.exists():
         app.setWindowIcon(QIcon(str(icon_path)))
 

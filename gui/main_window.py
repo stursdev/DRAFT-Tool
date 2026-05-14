@@ -163,7 +163,7 @@ class MainWindow(QMainWindow):
 
         # Application icon — used by the OS for the window title bar, dock /
         # taskbar, and (when set on QApplication in main.py) the .exe icon.
-        app_icon_path = ASSETS_DIR / "app_icon.png"
+        app_icon_path = ASSETS_DIR / "app_icon.ico"
         if app_icon_path.exists():
             self.setWindowIcon(QIcon(str(app_icon_path)))
 
@@ -187,7 +187,7 @@ class MainWindow(QMainWindow):
         # ── Tab 1: Document Migration ──────────────────────────────────────────
         self._tab_widget.addTab(
             MigrationTab(),
-            self._load_icon("app_icon.png"),
+            self._load_icon("app_icon.ico"),
             "Document\nMigration",
         )
 
