@@ -30,6 +30,7 @@ htmlcov/
 # Output files produced by the tool
 output/
 *.docx
+!docs/*.docx
 
 # IDE
 .vscode/
