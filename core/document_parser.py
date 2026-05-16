@@ -10,10 +10,14 @@
 # Key behaviors:
 #
 #   1. Heading detection
-#      Checks the paragraph style name first ("Heading 1", "Heading 2", etc.).
-#      Falls back to the paragraph's XML outline level for documents that use
-#      custom style names but still set the outline level in the XML — this is
-#      common in older or non-standard Word templates.
+#      Three strategies are tried in order:
+#        a) Style name starts with "Heading" — covers all built-in heading styles.
+#        b) Paragraph XML <w:outlineLvl> — covers custom-named styles that
+#           explicitly set the outline level on each paragraph element.
+#        c) Style inheritance chain (basedOn) — covers custom styles built on
+#           top of a built-in heading style via Word's "Style based on" setting.
+#           The outline level lives in the ancestor style definition (styles.xml),
+#           not on each paragraph, so strategies (a) and (b) miss these.
 #
 #   2. Document order preservation
 #      python-docx exposes paragraphs and tables as two separate flat lists,
@@ -223,21 +227,30 @@ class DocumentParser:
         Determine if a paragraph is a heading and return its level (1–6).
         Returns None if the paragraph is not a heading.
 
-        Two detection strategies are used in priority order:
+        Three detection strategies are used in priority order:
 
         Strategy 1 — Style name check:
           Word's built-in heading styles are named "Heading 1", "Heading 2",
           etc. We check if the paragraph style name starts with "heading"
           (case-insensitive) and extract the trailing number.
 
-        Strategy 2 — XML outline level check:
+        Strategy 2 — Paragraph-level XML outline level:
           Some documents use custom style names (not "Heading N") but still
-          set the paragraph's outline level in the XML properties. Word uses
-          the outline level to include paragraphs in the Navigation pane and
-          Table of Contents. The outline level is stored as:
+          set the paragraph's outline level directly in the paragraph XML.
+          Word uses the outline level to include paragraphs in the Navigation
+          pane and Table of Contents. Stored as:
             <w:pPr><w:outlineLvl w:val="0"/></w:pPr>
           where val="0" means Heading 1, val="1" means Heading 2, etc.
           (0-indexed in XML, so we add 1 to convert to 1-indexed level)
+
+        Strategy 3 — Style inheritance chain:
+          Custom styles can be built on top of built-in heading styles via
+          Word's "Style based on" setting (stored as <w:basedOn> in styles.xml).
+          When this is done correctly the outline level lives in the ancestor
+          style definition, not on each individual paragraph element — so
+          Strategy 2 misses it. We walk the basedOn chain looking for either
+          a "Heading N" ancestor name or an outlineLvl defined in the style
+          definition itself.
         """
         style_name = paragraph.style.name.lower() if paragraph.style else ""
 
@@ -247,7 +260,7 @@ class DocumentParser:
             if match:
                 return int(match.group(1))
 
-        # Strategy 2: Check the XML outline level as a fallback
+        # Strategy 2: Check the XML outline level on the paragraph element
         paragraph_properties = paragraph._element.find(qn("w:pPr"))
         if paragraph_properties is not None:
             outline_level_element = paragraph_properties.find(qn("w:outlineLvl"))
@@ -259,7 +272,63 @@ class DocumentParser:
                     if 1 <= heading_level <= MAX_HEADING_LEVEL:
                         return heading_level
 
-        return None   # Not a heading by either strategy
+        # Strategy 3: Walk the style inheritance chain
+        return self._heading_level_from_style_chain(paragraph.style)
+
+    def _heading_level_from_style_chain(self, style) -> Optional[int]:
+        """
+        Walk the style's basedOn inheritance chain looking for evidence that
+        this style is semantically a heading.
+
+        At each step two things are checked:
+          1. Whether the ancestor style name starts with "heading" — catches
+             custom styles that inherit from a built-in Heading N style and
+             whose name does not itself start with "heading".
+          2. Whether the ancestor style definition in styles.xml sets
+             <w:outlineLvl> — catches styles whose level is defined once on
+             the style rather than repeated on every paragraph element.
+
+        A visited-ID set guards against pathological circular basedOn chains
+        (not valid OOXML, but defensively handled). The loop terminates
+        naturally when base_style returns None (top of the chain).
+        """
+        if style is None:
+            return None
+
+        visited: set[int] = set()
+        current = style
+
+        while current is not None:
+            if id(current) in visited:
+                break
+            visited.add(id(current))
+
+            # Check the ancestor style name
+            ancestor_name = current.name.lower() if current.name else ""
+            if ancestor_name.startswith(HEADING_STYLE_PREFIX):
+                match = re.search(r"(\d+)$", ancestor_name)
+                if match:
+                    return int(match.group(1))
+
+            # Check outlineLvl in the style definition (styles.xml).
+            # This is separate from the paragraph-element check in Strategy 2 —
+            # the level is defined once on the style, not on every paragraph.
+            try:
+                style_pPr = current.element.find(qn("w:pPr"))
+                if style_pPr is not None:
+                    outline_elem = style_pPr.find(qn("w:outlineLvl"))
+                    if outline_elem is not None:
+                        raw_val = outline_elem.get(qn("w:val"))
+                        if raw_val is not None:
+                            level = int(raw_val) + 1
+                            if 1 <= level <= MAX_HEADING_LEVEL:
+                                return level
+            except (AttributeError, ValueError):
+                pass
+
+            current = current.base_style
+
+        return None   # Not a heading by any strategy
 
     def _paragraph_contains_image(self, paragraph) -> bool:
         """
