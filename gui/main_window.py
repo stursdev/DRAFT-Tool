@@ -144,8 +144,10 @@ class MainWindow(QMainWindow):
     Application shell — hosts the left sidebar tab bar and all content tabs.
     """
 
-    MINIMUM_WINDOW_WIDTH  = 960
-    MINIMUM_WINDOW_HEIGHT = 860
+    # Minimum size — enforced as the hard floor.
+    # Chosen to keep all three steps legible on a small 13" display.
+    MINIMUM_WINDOW_WIDTH  = 860
+    MINIMUM_WINDOW_HEIGHT = 600
 
     def __init__(self):
         super().__init__()
@@ -153,13 +155,33 @@ class MainWindow(QMainWindow):
         self._build_ui()
 
     def _configure_window(self):
-        """Set title, icon, minimum size, and center on the primary screen."""
+        """
+        Set title, icon, minimum size, and center on the primary screen.
+
+        Default size is screen-percentage based (88% × 90%) so the window
+        fills most of the screen on any display size — large monitors get a
+        large window, 13-14" laptops get a window that fits without scrolling.
+        The hard minimum of 860 × 600 prevents the window from becoming
+        unusably small on very small or low-DPI displays.
+        """
         self.setWindowTitle("DRAFT Tool")
         self.setMinimumSize(self.MINIMUM_WINDOW_WIDTH, self.MINIMUM_WINDOW_HEIGHT)
-        self.resize(
-            self.MINIMUM_WINDOW_WIDTH  + 40,
-            self.MINIMUM_WINDOW_HEIGHT + 60,
+
+        screen   = QApplication.primaryScreen().geometry()
+        screen_w = screen.width()
+        screen_h = screen.height()
+
+        # Cap at (screen − 20 px) and (screen − 40 px) so a tiny sliver of
+        # the desktop is always visible behind the window.
+        default_w = max(
+            self.MINIMUM_WINDOW_WIDTH,
+            min(int(screen_w * 0.88), screen_w - 20),
         )
+        default_h = max(
+            self.MINIMUM_WINDOW_HEIGHT,
+            min(int(screen_h * 0.90), screen_h - 40),
+        )
+        self.resize(default_w, default_h)
 
         # Application icon — used by the OS for the window title bar, dock /
         # taskbar, and (when set on QApplication in main.py) the .exe icon.
@@ -168,10 +190,9 @@ class MainWindow(QMainWindow):
             self.setWindowIcon(QIcon(str(app_icon_path)))
 
         # Center the window on the primary screen
-        screen = QApplication.primaryScreen().geometry()
         self.move(
-            (screen.width()  - self.width())  // 2,
-            (screen.height() - self.height()) // 2,
+            (screen_w - default_w) // 2,
+            (screen_h - default_h) // 2,
         )
 
     def _build_ui(self):

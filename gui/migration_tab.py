@@ -46,6 +46,7 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QRadioButton,
     QSizePolicy,
+    QSplitter,
     QVBoxLayout,
     QWidget,
 )
@@ -57,8 +58,9 @@ from core.content_migrator   import ContentMigrator
 from core.document_parser    import DocumentParser
 from core.workers            import AnalyzeWorker, MigrateWorker
 from models.sections         import MappingResult, MappingStatus, MigrationMode, Section
-from gui.mapping_table     import MappingTableWidget
-from gui.widgets           import SectionLabel
+from gui.mapping_table       import MappingTableWidget
+from gui.mapping_visualizer  import MappingVisualizerWidget
+from gui.widgets             import SectionLabel
 
 
 class MigrationTab(QWidget):
@@ -96,20 +98,58 @@ class MigrationTab(QWidget):
     # =========================================================================
 
     def _build_ui(self):
-        """Assemble the three steps and the status bar."""
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(12, 12, 12, 8)
-        main_layout.setSpacing(10)
+        """
+        Assemble the three steps and the status bar.
 
-        main_layout.addWidget(self._build_step1_group(), stretch=0)
+        Layout:
+          ┌─────────────────────────────────────────────────────────────┐
+          │ QSplitter (Horizontal)                                      │
+          │  ├─ content_widget  (Steps 1 / 2 / 3)                      │
+          │  └─ _visualizer_panel  (hidden until "Visualize" toggled)   │
+          ├─────────────────────────────────────────────────────────────┤
+          │ status bar (outside the splitter — always full-width)       │
+          └─────────────────────────────────────────────────────────────┘
+
+        The splitter handle width is set to 1 px so it acts as a thin divider
+        rather than a draggable gutter.  setCollapsible(0, False) prevents the
+        user from accidentally collapsing the main content pane.
+        """
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+
+        # ── Splitter ──────────────────────────────────────────────────────────
+        self._main_splitter = QSplitter(Qt.Horizontal)
+        self._main_splitter.setHandleWidth(1)
+        self._main_splitter.setChildrenCollapsible(False)
+
+        # Left pane — the three workflow steps
+        content_widget = QWidget()
+        content_layout = QVBoxLayout(content_widget)
+        content_layout.setContentsMargins(12, 12, 12, 8)
+        content_layout.setSpacing(10)
+
+        content_layout.addWidget(self._build_step1_group(), stretch=0)
 
         self._step2_group = self._build_step2_group()
-        main_layout.addWidget(self._step2_group, stretch=1)
+        content_layout.addWidget(self._step2_group, stretch=1)
 
         self._step3_group = self._build_step3_group()
-        main_layout.addWidget(self._step3_group, stretch=0)
+        content_layout.addWidget(self._step3_group, stretch=0)
 
-        main_layout.addWidget(self._build_status_bar())
+        self._main_splitter.addWidget(content_widget)
+
+        # Right pane — visualization panel (initially hidden)
+        self._visualizer_panel = MappingVisualizerWidget()
+        self._visualizer_panel.setVisible(False)
+        self._main_splitter.addWidget(self._visualizer_panel)
+
+        # Prevent programmatic collapse via the splitter handle
+        self._main_splitter.setCollapsible(0, False)
+        self._main_splitter.setCollapsible(1, False)
+
+        outer_layout.addWidget(self._main_splitter, stretch=1)
+        outer_layout.addWidget(self._build_status_bar())
 
         self._set_step2_enabled(False)
         self._set_step3_enabled(False)
@@ -276,6 +316,28 @@ class MigrationTab(QWidget):
         self._mapping_table_widget = MappingTableWidget()
         self._mapping_table_widget.countChanged.connect(self._on_mapping_counts_changed)
         layout.addWidget(self._mapping_table_widget)
+
+        # ── Visualize Mapping button ────────────────────────────────────────────
+        # Placed below the mapping table, right-aligned.  Acts as a toggle:
+        # first click opens the side panel (~40% of window width); second click
+        # closes it.  The panel is a QSplitter pane wired in _build_ui().
+        visualize_row = QHBoxLayout()
+        visualize_row.addStretch()
+
+        self._visualize_button = QPushButton("  🗺  Visualize Mapping")
+        self._visualize_button.setObjectName("visualize_btn")
+        self._visualize_button.setCheckable(True)
+        self._visualize_button.setToolTip(
+            "Toggle the mapping visualization panel (source → destination diagram)"
+        )
+        self._visualize_button.setAccessibleName("Visualize mapping")
+        self._visualize_button.setAccessibleDescription(
+            "Open or close the side panel that shows a diagram of how source "
+            "sections connect to destination sections."
+        )
+        self._visualize_button.toggled.connect(self._on_visualize_toggled)
+        visualize_row.addWidget(self._visualize_button)
+        layout.addLayout(visualize_row)
 
         return group
 
@@ -665,6 +727,33 @@ class MigrationTab(QWidget):
             QComboBox:focus {
                 border: 2px solid #2563eb;
             }
+
+            /* Visualize Mapping toggle button */
+            QPushButton#visualize_btn {
+                border: 1px solid #3b82f6;
+                border-radius: 4px;
+                padding: 5px 12px;
+                background-color: #eff6ff;
+                color: #1d4ed8;
+                font-size: 11px;
+                font-weight: bold;
+            }
+            QPushButton#visualize_btn:hover {
+                background-color: #dbeafe;
+            }
+            QPushButton#visualize_btn:checked {
+                background-color: #2563eb;
+                color: #ffffff;
+                border-color: #1d4ed8;
+            }
+            QPushButton#visualize_btn:checked:hover {
+                background-color: #1d4ed8;
+            }
+            QPushButton#visualize_btn:disabled {
+                border-color: #bfdbfe;
+                color: #93c5fd;
+                background-color: #f0f9ff;
+            }
         """)
 
     # =========================================================================
@@ -679,6 +768,14 @@ class MigrationTab(QWidget):
             f"  STEP 2 · REVIEW SECTION MAPPINGS   {icon}"
         )
 
+        # Close the visualization panel and reset the toggle button when
+        # Step 2 is locked (e.g. after a new Analyze clears the table).
+        if not is_enabled:
+            self._visualize_button.blockSignals(True)
+            self._visualize_button.setChecked(False)
+            self._visualize_button.blockSignals(False)
+            self._visualizer_panel.setVisible(False)
+
     def _set_step3_enabled(self, is_enabled: bool):
         """
         Enable or disable Step 3 and update its title icon.
@@ -691,6 +788,36 @@ class MigrationTab(QWidget):
         self._step3_group.setTitle(
             f"  STEP 3 · MIGRATION OPTIONS   {icon}"
         )
+
+    # =========================================================================
+    # Visualize Mapping toggle
+    # =========================================================================
+
+    def _on_visualize_toggled(self, checked: bool):
+        """
+        Open or close the mapping visualization side panel.
+
+        When opening:
+          - Makes the panel visible.
+          - Sets the splitter to a 60 / 40 split so the panel takes roughly
+            40 % of the window width.
+          - Pushes the current mapping results to the panel immediately so
+            the diagram is populated before it becomes visible.
+
+        When closing:
+          - Hides the panel (collapses to zero width in the splitter).
+        """
+        if checked:
+            # Push current data before showing so the panel is never blank
+            current_results = self._mapping_table_widget.get_results()
+            self._visualizer_panel.update_mappings(current_results)
+            self._visualizer_panel.setVisible(True)
+
+            # Apply 60/40 split based on the current total width
+            total_w = self._main_splitter.width()
+            self._main_splitter.setSizes([int(total_w * 0.60), int(total_w * 0.40)])
+        else:
+            self._visualizer_panel.setVisible(False)
 
     # =========================================================================
     # File browser slots
@@ -1138,6 +1265,12 @@ class MigrationTab(QWidget):
             self._unmapped_acknowledgement_checkbox.blockSignals(False)
 
         self._update_acknowledgement_visibility(counts.get("unmapped", 0))
+
+        # Push live updates to the visualization panel whenever it is open
+        if self._visualizer_panel.isVisible():
+            self._visualizer_panel.update_mappings(
+                self._mapping_table_widget.get_results()
+            )
 
     def _update_acknowledgement_visibility(self, unmapped_count: int):
         """
