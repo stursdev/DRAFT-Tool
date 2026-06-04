@@ -810,7 +810,7 @@ class MigrationTab(QWidget):
         if checked:
             # Push current data before showing so the panel is never blank
             current_results = self._mapping_table_widget.get_results()
-            self._visualizer_panel.update_mappings(current_results)
+            self._visualizer_panel.update_mappings(current_results, self._dest_sections)
             self._visualizer_panel.setVisible(True)
 
             # Apply 60/40 split based on the current total width
@@ -1270,7 +1270,8 @@ class MigrationTab(QWidget):
         # Push live updates to the visualization panel whenever it is open
         if self._visualizer_panel.isVisible():
             self._visualizer_panel.update_mappings(
-                self._mapping_table_widget.get_results()
+                self._mapping_table_widget.get_results(),
+                self._dest_sections,
             )
 
     def _update_acknowledgement_visibility(self, unmapped_count: int):

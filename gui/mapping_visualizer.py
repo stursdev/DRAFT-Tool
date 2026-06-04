@@ -80,9 +80,15 @@ _STATUS_FILL = {
     MappingStatus.SKIPPED:  QColor("#EFF6FF"),
 }
 
-# Destination boxes — neutral slate regardless of which sources map to them
-_DEST_FILL   = QColor("#F1F5F9")
-_DEST_BORDER = QColor("#475569")
+# Destination boxes:
+#   Has ≥1 source mapped → green (matches AUTO/MANUAL source colour)
+#   Nothing mapped to it  → blue  (matches SKIPPED source colour)
+# Red and amber are intentionally absent from the destination column —
+# a destination is either reachable (green) or unreachable (blue).
+_DEST_MAPPED_FILL     = QColor("#DCFCE7")
+_DEST_MAPPED_BORDER   = QColor("#16A34A")
+_DEST_UNMAPPED_FILL   = QColor("#EFF6FF")
+_DEST_UNMAPPED_BORDER = QColor("#2563EB")
 
 # Canvas background
 _BG_COLOR    = QColor("#FFFFFF")
@@ -118,14 +124,15 @@ class MappingCanvas(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._results: list[MappingResult] = []
+        self._results:       list[MappingResult] = []
+        self._dest_sections: list               = []   # all Section objects from dest doc
         self._font  = QFont("Segoe UI", _FONT_SIZE)
         self._fm    = QFontMetrics(self._font)
         self._total_height = 200
 
         # Calculated by _recalculate() — used in paintEvent
-        self._src_boxes : list = []   # (QRect, MappingResult)
-        self._dst_boxes : list = []   # (QRect, title: str)
+        self._src_boxes : list = []   # [(QRect, MappingResult), …]
+        self._dst_boxes : list = []   # [(QRect, title: str, is_mapped: bool), …]
         self._dst_index : dict = {}   # title → index in _dst_boxes
 
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
@@ -135,9 +142,17 @@ class MappingCanvas(QWidget):
     # Public API
     # =========================================================================
 
-    def set_data(self, results: list[MappingResult]):
-        """Push a new set of mapping results and trigger a repaint."""
-        self._results = results
+    def set_data(self, results: list[MappingResult], dest_sections: list):
+        """
+        Push updated mapping results and the full destination section list,
+        then trigger a repaint.
+
+        dest_sections must be the complete ordered list of Section objects
+        from the destination document so every destination section is shown
+        even if no source maps to it.
+        """
+        self._results       = results
+        self._dest_sections = dest_sections
         self._recalculate()
         self.update()
 
@@ -179,11 +194,13 @@ class MappingCanvas(QWidget):
                 text_color=QColor("#111827"),
             )
 
-        # Destination boxes
-        for rect, title in self._dst_boxes:
+        # Destination boxes — colour depends on whether anything maps to them
+        for rect, title, is_mapped in self._dst_boxes:
+            fill   = _DEST_MAPPED_FILL   if is_mapped else _DEST_UNMAPPED_FILL
+            border = _DEST_MAPPED_BORDER if is_mapped else _DEST_UNMAPPED_BORDER
             self._paint_box(
                 painter, rect, title,
-                _DEST_FILL, _DEST_BORDER,
+                fill, border,
                 text_color=QColor("#1E293B"),
             )
 
@@ -195,19 +212,21 @@ class MappingCanvas(QWidget):
 
     def _recalculate(self):
         """
-        Compute the position and size of every source box and destination box.
+        Compute the position and size of every source and destination box.
 
         Source boxes:
-          Stacked top-to-bottom in source document order, each sized to fit
-          its title text at the available column width.
+          All source sections stacked top-to-bottom in document order.
 
         Destination boxes:
-          Only unique mapped destinations are shown. Each is vertically
-          centered at the average Y-midpoint of all source boxes that map
-          to it. Overlap between adjacent destination boxes is resolved by
-          pushing later boxes downward.
+          ALL destination sections stacked top-to-bottom in document order —
+          even those with no source mapped to them. Each box is coloured:
+            • green  — at least one non-skipped/unmapped source maps to it
+            • blue   — nothing maps to it (unreachable in this migration)
+
+        Connector lines are drawn later in _paint_connectors, only for
+        results that have a destination and are not UNMAPPED or SKIPPED.
         """
-        if not self._results:
+        if not self._results and not self._dest_sections:
             self._src_boxes    = []
             self._dst_boxes    = []
             self._dst_index    = {}
@@ -217,11 +236,11 @@ class MappingCanvas(QWidget):
 
         canvas_w = max(self.width(), 200)
 
-        # Column geometry — source and destination each occupy ~40% of width.
-        # The remaining ~20% in the middle holds the connector curves.
-        col_w   = int((canvas_w - _SIDE_MARGIN * 2) * 0.42)
-        src_x   = _SIDE_MARGIN
-        dst_x   = canvas_w - _SIDE_MARGIN - col_w
+        # Column geometry — each column is ~42% of the canvas width.
+        # The remaining ~16% in the middle holds the connector curves.
+        col_w = int((canvas_w - _SIDE_MARGIN * 2) * 0.42)
+        src_x = _SIDE_MARGIN
+        dst_x = canvas_w - _SIDE_MARGIN - col_w
 
         # ── Source boxes ──────────────────────────────────────────────────────
         src_boxes: list = []
@@ -235,58 +254,31 @@ class MappingCanvas(QWidget):
 
         src_bottom = y
 
-        # ── Destination boxes ─────────────────────────────────────────────────
-        # Build ordered list of unique destinations and the Y-midpoints of all
-        # source boxes that connect to each one.
-        dst_order   : list[str] = []   # unique dest titles in appearance order
-        dst_seen    : set       = set()
-        dst_src_mids: dict      = {}   # title → [source_box_Y_midpoints]
-        dst_heights : dict      = {}   # title → calculated box height
+        # ── Which destinations receive at least one active mapping? ────────────
+        # UNMAPPED and SKIPPED sources do not contribute a connection, so their
+        # dest_section (if any) should not count as "mapped".
+        _inactive = {MappingStatus.UNMAPPED, MappingStatus.SKIPPED}
+        mapped_dest_titles: set[str] = {
+            result.dest_section.title
+            for result in self._results
+            if result.dest_section is not None
+            and result.status not in _inactive
+        }
 
-        for i, (rect, result) in enumerate(src_boxes):
-            if result.dest_section is None:
-                continue
-            title = result.dest_section.title
-            if title not in dst_seen:
-                dst_order.append(title)
-                dst_seen.add(title)
-                dst_src_mids[title] = []
-                dst_heights[title]  = self._box_height(title, col_w)
-            dst_src_mids[title].append(rect.top() + rect.height() // 2)
-
-        # Assign initial Y for each destination — vertically centered on
-        # the average midpoint of its connected sources.
-        dst_ideal_y: dict = {}
-        for title in dst_order:
-            mids     = dst_src_mids[title]
-            center_y = int(sum(mids) / len(mids))
-            dst_ideal_y[title] = center_y - dst_heights[title] // 2
-
-        # Sort by ideal Y, then push overlapping boxes down.
-        sorted_titles = sorted(dst_order, key=lambda t: dst_ideal_y[t])
-        resolved_y: dict = {}
-        prev_bottom = _HEADER_HEIGHT + _TOP_MARGIN
-
-        for title in sorted_titles:
-            y_pos = max(dst_ideal_y[title], prev_bottom)
-            resolved_y[title] = y_pos
-            prev_bottom = y_pos + dst_heights[title] + _BOX_GAP
-
-        # Build final dst_boxes list in original appearance order
+        # ── Destination boxes — ALL sections in document order ────────────────
         dst_boxes : list = []
         dst_index : dict = {}
+        y = _HEADER_HEIGHT + _TOP_MARGIN
 
-        for title in dst_order:
-            y_pos = resolved_y[title]
-            h     = dst_heights[title]
-            rect  = QRect(dst_x, y_pos, col_w, h)
-            dst_index[title] = len(dst_boxes)
-            dst_boxes.append((rect, title))
+        for section in self._dest_sections:
+            h        = self._box_height(section.title, col_w)
+            rect     = QRect(dst_x, y, col_w, h)
+            is_mapped = section.title in mapped_dest_titles
+            dst_index[section.title] = len(dst_boxes)
+            dst_boxes.append((rect, section.title, is_mapped))
+            y += h + _BOX_GAP
 
-        dst_bottom = (
-            max(rect.bottom() for rect, _ in dst_boxes) + 16
-            if dst_boxes else 0
-        )
+        dst_bottom = y
 
         self._src_boxes    = src_boxes
         self._dst_boxes    = dst_boxes
@@ -346,22 +338,27 @@ class MappingCanvas(QWidget):
 
     def _paint_connectors(self, painter: QPainter):
         """
-        Draw a bezier curve from each mapped source box's right edge to
-        its destination box's left edge. Line color matches the mapping status.
+        Draw a bezier curve from each active source box's right edge to its
+        destination box's left edge. Line colour matches the mapping status.
+
+        UNMAPPED and SKIPPED sources have no active destination and therefore
+        receive no connector line.
         """
-        canvas_w = self.width()
-        col_w    = int((canvas_w - _SIDE_MARGIN * 2) * 0.42)
+        _no_connector = {MappingStatus.UNMAPPED, MappingStatus.SKIPPED}
+
+        canvas_w  = self.width()
+        col_w     = int((canvas_w - _SIDE_MARGIN * 2) * 0.42)
         src_right = _SIDE_MARGIN + col_w
         dst_left  = canvas_w - _SIDE_MARGIN - col_w
 
         for src_rect, result in self._src_boxes:
-            if result.dest_section is None:
+            if result.dest_section is None or result.status in _no_connector:
                 continue
             idx = self._dst_index.get(result.dest_section.title)
             if idx is None:
                 continue
 
-            dst_rect, _ = self._dst_boxes[idx]
+            dst_rect, _, __ = self._dst_boxes[idx]
             color = _STATUS_BORDER[result.status]
 
             src_y = src_rect.top() + src_rect.height() // 2
@@ -427,9 +424,12 @@ class MappingVisualizerWidget(QWidget):
     # Public API
     # =========================================================================
 
-    def update_mappings(self, results: list[MappingResult]):
-        """Push updated mapping results to the canvas and repaint."""
-        self._canvas.set_data(results)
+    def update_mappings(self, results: list[MappingResult], dest_sections: list):
+        """
+        Push updated mapping results and the full destination section list
+        to the canvas and trigger a repaint.
+        """
+        self._canvas.set_data(results, dest_sections)
 
     # =========================================================================
     # UI construction
