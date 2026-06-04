@@ -323,7 +323,7 @@ class MappingCanvas(QWidget):
         painter.end()
 
     def _paint_headers(self, painter: QPainter):
-        """Draw 'Source Document' and 'Destination' column labels."""
+        """Draw 'Source Document' and 'Destination Document' column labels."""
         canvas_w = self.width()
         col_w    = int((canvas_w - _SIDE_MARGIN * 2) * 0.42)
 
@@ -334,13 +334,13 @@ class MappingCanvas(QWidget):
 
         painter.drawText(
             QRect(_SIDE_MARGIN, 0, col_w, _HEADER_HEIGHT),
-            Qt.AlignLeft | Qt.AlignVCenter,
+            Qt.AlignHCenter | Qt.AlignVCenter,
             "Source Document",
         )
         painter.drawText(
             QRect(canvas_w - _SIDE_MARGIN - col_w, 0, col_w, _HEADER_HEIGHT),
-            Qt.AlignLeft | Qt.AlignVCenter,
-            "Destination",
+            Qt.AlignHCenter | Qt.AlignVCenter,
+            "Destination Document",
         )
         painter.setFont(self._font)
 
@@ -440,34 +440,6 @@ class MappingVisualizerWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # ── Header bar ────────────────────────────────────────────────────────
-        header = QWidget()
-        header.setObjectName("viz_header")
-        header.setFixedHeight(40)
-        header_row = QHBoxLayout(header)
-        header_row.setContentsMargins(12, 0, 12, 0)
-
-        title_label = QLabel("Mapping Visualization")
-        title_label.setObjectName("viz_title")
-        header_row.addWidget(title_label)
-        header_row.addStretch()
-
-        # Color key — compact legend
-        for color_hex, label_text in [
-            ("#16A34A", "Mapped"),
-            ("#D97706", "Review"),
-            ("#DC2626", "Unmapped"),
-            ("#2563EB", "Skipped"),
-        ]:
-            dot = QLabel("●")
-            dot.setStyleSheet(f"color: {color_hex}; font-size: 10px;")
-            key_lbl = QLabel(label_text)
-            key_lbl.setObjectName("viz_key_label")
-            header_row.addWidget(dot)
-            header_row.addWidget(key_lbl)
-
-        layout.addWidget(header)
-
         # ── Scroll area ───────────────────────────────────────────────────────
         self._scroll = QScrollArea()
         self._scroll.setObjectName("viz_scroll")
@@ -479,28 +451,67 @@ class MappingVisualizerWidget(QWidget):
         self._scroll.setWidget(self._canvas)
         layout.addWidget(self._scroll, stretch=1)
 
+        # ── Legend bar (bottom, matching the main status bar style) ───────────
+        legend = QWidget()
+        legend.setObjectName("viz_legend")
+        legend.setFixedHeight(32)
+        legend.setAttribute(Qt.WA_StyledBackground, True)
+        legend_row = QHBoxLayout(legend)
+        legend_row.setContentsMargins(12, 0, 12, 0)
+        legend_row.setSpacing(0)
+
+        for color_hex, label_text in [
+            ("#16A34A", "Mapped"),
+            ("#D97706", "Review"),
+            ("#DC2626", "Unmapped"),
+            ("#2563EB", "Skipped"),
+        ]:
+            dot = QLabel("●")
+            dot.setObjectName("viz_dot")
+            dot.setStyleSheet(
+                f"color: {color_hex}; font-size: 11px; "
+                "background-color: transparent;"
+            )
+            dot.setAttribute(Qt.WA_StyledBackground, True)
+            key_lbl = QLabel(label_text)
+            key_lbl.setObjectName("viz_key_label")
+            key_lbl.setAttribute(Qt.WA_StyledBackground, True)
+            legend_row.addWidget(dot)
+            legend_row.addWidget(key_lbl)
+
+            divider = QLabel()
+            divider.setObjectName("viz_divider")
+            divider.setFixedWidth(1)
+            divider.setAttribute(Qt.WA_StyledBackground, True)
+            legend_row.addWidget(divider)
+
+        legend_row.addStretch()
+        layout.addWidget(legend)
+
     def _apply_styles(self):
         self.setStyleSheet("""
-            QWidget#viz_header {
-                background-color: #1e293b;
-                border-left: 3px solid #3b82f6;
-            }
-            QLabel#viz_title {
-                color: #f1f5f9;
-                font-weight: bold;
-                font-size: 12px;
-                font-family: 'Segoe UI', Arial, sans-serif;
-                padding-right: 16px;
-            }
-            QLabel#viz_key_label {
-                color: #94a3b8;
-                font-size: 10px;
-                font-family: 'Segoe UI', Arial, sans-serif;
-                padding-right: 8px;
-            }
             QScrollArea#viz_scroll {
                 border: none;
                 border-left: 1px solid #cbd5e1;
                 background-color: #ffffff;
+            }
+            QWidget#viz_legend {
+                background-color: #1e293b;
+                border-top: 1px solid #334155;
+                border-left: 1px solid #cbd5e1;
+            }
+            QLabel#viz_key_label {
+                color: #e2e8f0;
+                font-size: 11px;
+                font-family: 'Segoe UI', Arial, sans-serif;
+                padding: 0 14px 0 4px;
+                background-color: transparent;
+            }
+            QLabel#viz_divider {
+                background-color: #475569;
+                max-width: 1px;
+                min-height: 16px;
+                max-height: 16px;
+                margin: 8px 0;
             }
         """)
