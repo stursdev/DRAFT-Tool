@@ -92,7 +92,7 @@ _BG_COLOR    = QColor("#FFFFFF")
 # Layout constants
 # =============================================================================
 
-_FONT_SIZE       = 9     # pt — keeps text compact in the narrow panel
+_FONT_SIZE       = 10    # pt — keeps text compact in the narrow panel
 _BOX_PADDING     = 8     # px — inner horizontal and vertical padding
 _BOX_GAP         = 8     # px — vertical gap between consecutive boxes
 _BOX_MIN_HEIGHT  = 32    # px — minimum box height even for very short titles
@@ -327,7 +327,7 @@ class MappingCanvas(QWidget):
         canvas_w = self.width()
         col_w    = int((canvas_w - _SIDE_MARGIN * 2) * 0.42)
 
-        hdr_font = QFont("Segoe UI", _FONT_SIZE - 1)
+        hdr_font = QFont("Segoe UI", _FONT_SIZE)
         hdr_font.setBold(True)
         painter.setFont(hdr_font)
         painter.setPen(QColor("#64748B"))
@@ -476,7 +476,7 @@ class MappingVisualizerWidget(QWidget):
             dot = QLabel("●")
             dot.setObjectName("viz_dot")
             dot.setStyleSheet(
-                f"color: {color_hex}; font-size: 10px; background-color: transparent;"
+                f"color: {color_hex}; font-size: 11px; background-color: transparent;"
             )
             dot.setAttribute(Qt.WA_StyledBackground, True)
             key_lbl = QLabel(label_text)
@@ -502,7 +502,7 @@ class MappingVisualizerWidget(QWidget):
             }
             QLabel#viz_key_label {
                 color: #64748b;
-                font-size: 10px;
+                font-size: 11px;
                 font-family: 'Segoe UI', Arial, sans-serif;
                 padding: 0 10px 0 3px;
                 background-color: transparent;
