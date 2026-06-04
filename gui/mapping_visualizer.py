@@ -440,10 +440,11 @@ class MappingVisualizerWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # ── Scroll area (fills the full panel height) ─────────────────────────
-        # The legend for this panel is deliberately NOT placed here. It lives
-        # in the main status bar (migration_tab.py) so both bars sit at exactly
-        # the same vertical position at the bottom of the window.
+        # ── Scroll area ───────────────────────────────────────────────────────
+        # Takes all available vertical space. The canvas inside sets its own
+        # minimum height via setMinimumHeight() so the scroll area knows when
+        # to show the vertical scrollbar. The legend below is always visible
+        # because it sits outside the scroll area in the parent layout.
         self._scroll = QScrollArea()
         self._scroll.setObjectName("viz_scroll")
         self._scroll.setWidgetResizable(True)
@@ -454,11 +455,56 @@ class MappingVisualizerWidget(QWidget):
         self._scroll.setWidget(self._canvas)
         layout.addWidget(self._scroll, stretch=1)
 
+        # ── Legend bar (always visible, pinned below the scroll area) ─────────
+        # Light background so it blends with the canvas rather than competing
+        # with the dark status bar on the left pane.
+        legend = QWidget()
+        legend.setObjectName("viz_legend")
+        legend.setFixedHeight(32)
+        legend.setAttribute(Qt.WA_StyledBackground, True)
+        legend_row = QHBoxLayout(legend)
+        legend_row.setContentsMargins(0, 0, 0, 0)
+        legend_row.setSpacing(0)
+
+        legend_row.addStretch()
+        for color_hex, label_text in [
+            ("#16A34A", "Mapped"),
+            ("#D97706", "Review"),
+            ("#DC2626", "Unmapped"),
+            ("#2563EB", "Skipped"),
+        ]:
+            dot = QLabel("●")
+            dot.setObjectName("viz_dot")
+            dot.setStyleSheet(
+                f"color: {color_hex}; font-size: 10px; background-color: transparent;"
+            )
+            dot.setAttribute(Qt.WA_StyledBackground, True)
+            key_lbl = QLabel(label_text)
+            key_lbl.setObjectName("viz_key_label")
+            key_lbl.setAttribute(Qt.WA_StyledBackground, True)
+            legend_row.addWidget(dot)
+            legend_row.addWidget(key_lbl)
+        legend_row.addStretch()
+
+        layout.addWidget(legend)
+
     def _apply_styles(self):
         self.setStyleSheet("""
             QScrollArea#viz_scroll {
                 border: none;
                 border-left: 1px solid #cbd5e1;
                 background-color: #ffffff;
+            }
+            QWidget#viz_legend {
+                background-color: #f8fafc;
+                border-top: 1px solid #e2e8f0;
+                border-left: 1px solid #cbd5e1;
+            }
+            QLabel#viz_key_label {
+                color: #64748b;
+                font-size: 10px;
+                font-family: 'Segoe UI', Arial, sans-serif;
+                padding: 0 10px 0 3px;
+                background-color: transparent;
             }
         """)

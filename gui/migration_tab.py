@@ -584,41 +584,6 @@ class MigrationTab(QWidget):
             bar_layout.addWidget(divider)
 
         bar_layout.addStretch()
-
-        # ── Visualizer legend (right side, hidden until panel is open) ─────────
-        # Placed here so it shares the same bar height and background as the
-        # mapping-count labels on the left — guaranteeing perfect vertical alignment.
-        self._viz_legend_widgets: list = []   # kept for show/hide toggling
-
-        for color_hex, label_text in [
-            ("#16A34A", "Mapped"),
-            ("#D97706", "Review"),
-            ("#DC2626", "Unmapped"),
-            ("#2563EB", "Skipped"),
-        ]:
-            divider = QFrame()
-            divider.setFrameShape(QFrame.VLine)
-            divider.setFrameShadow(QFrame.Sunken)
-            divider.setAttribute(Qt.WA_StyledBackground, True)
-            divider.setStyleSheet("background-color: #475569; max-width: 1px;")
-            bar_layout.addWidget(divider)
-
-            dot_lbl = QLabel(f"●  {label_text}")
-            dot_lbl.setObjectName("sb_label")
-            dot_lbl.setAttribute(Qt.WA_StyledBackground, True)
-            dot_lbl.setStyleSheet(
-                f"color: {color_hex}; font-size: 11px; "
-                "padding: 0 14px; background-color: transparent;"
-            )
-            bar_layout.addWidget(dot_lbl)
-
-            # Track both widgets so we can show/hide them together
-            self._viz_legend_widgets.extend([divider, dot_lbl])
-
-        # Hidden until the visualize panel is opened
-        for w in self._viz_legend_widgets:
-            w.setVisible(False)
-
         return status_bar_frame
 
     # =========================================================================
@@ -810,8 +775,6 @@ class MigrationTab(QWidget):
             self._visualize_button.setChecked(False)
             self._visualize_button.blockSignals(False)
             self._visualizer_panel.setVisible(False)
-            for w in self._viz_legend_widgets:
-                w.setVisible(False)
 
     def _set_step3_enabled(self, is_enabled: bool):
         """
@@ -854,15 +817,8 @@ class MigrationTab(QWidget):
             total_w = self._main_splitter.width()
             self._main_splitter.setSizes([int(total_w * 0.60), int(total_w * 0.40)])
 
-            # Reveal the color-key legend in the shared status bar
-            for w in self._viz_legend_widgets:
-                w.setVisible(True)
         else:
             self._visualizer_panel.setVisible(False)
-
-            # Hide the legend when the panel closes
-            for w in self._viz_legend_widgets:
-                w.setVisible(False)
 
     # =========================================================================
     # File browser slots
