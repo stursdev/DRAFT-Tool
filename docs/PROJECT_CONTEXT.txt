@@ -1,0 +1,612 @@
+================================================================================
+DRAFT TOOL — PROJECT CONTEXT FILE
+Document Review and Formatting Transfer Tool
+================================================================================
+Last updated: 2026-06-03
+GitHub: https://github.com/stursdev/DRAFT-Tool.git (public repo)
+Local path: /Users/stursdev/Desktop/doc_migrator_v2/
+Python venv: /Users/stursdev/Desktop/doc_migrator_v2/.venv/
+Run app: python main.py  (from project root, with venv activated)
+================================================================================
+
+
+────────────────────────────────────────────────────────────────────────────────
+1. WHAT THE TOOL DOES
+────────────────────────────────────────────────────────────────────────────────
+
+DRAFT Tool automates migration of content from a legacy Word (.docx) document
+into a new document template. The workflow is:
+
+  1. User selects a Source document and a Destination template.
+  2. Both are parsed to extract Section objects (heading + content beneath it).
+  3. AutoMapper fuzzy-matches source sections to destination sections and
+     assigns a confidence score (AUTO ≥ 90%, REVIEW 65-89%, UNMAPPED < 65%).
+  4. User reviews the mapping table, overrides destinations, sets migration
+     modes (Append / Prepend / Replace), saves/loads profiles.
+  5. ContentMigrator writes a working copy of the template and inserts all
+     mapped source content colored green (RGB #00B050).
+  6. BoilerplateDetector post-processes the output: any green sentence that
+     verbatim matches the destination template's boilerplate is recolored blue.
+  7. Optionally exports a CSV audit report (one row per section).
+
+
+────────────────────────────────────────────────────────────────────────────────
+2. TECHNOLOGY STACK
+────────────────────────────────────────────────────────────────────────────────
+
+  Python 3.9+
+  PyQt5 ≥ 5.15   — GUI framework (QMainWindow, QTabWidget, QSplitter, etc.)
+  python-docx     — reads and writes .docx via OOXML / XML manipulation
+  rapidfuzz       — fuzzy string matching (token_sort_ratio)
+  polars          — CSV export via DataFrame
+  PyInstaller     — packaging to standalone executable
+
+  Requirements file: requirements.txt
+
+
+────────────────────────────────────────────────────────────────────────────────
+3. FILE STRUCTURE
+────────────────────────────────────────────────────────────────────────────────
+
+  main.py                         Entry point. Creates QApplication + MainWindow.
+                                  Sets AA_EnableHighDpiScaling before QApplication.
+
+  models/
+    sections.py                   SINGLE SOURCE OF TRUTH for all data models.
+                                  Contains: BlockType, MatchMethod, MigrationMode,
+                                  MappingStatus, ContentBlock, Section, MappingResult.
+
+  core/
+    document_parser.py            Parses .docx → list[Section]. Three heading
+                                  detection strategies (see Section 5 below).
+    auto_mapper.py                Scores source→dest pairs, returns list[MappingResult].
+    content_migrator.py           Writes migrated content into a template copy.
+    boilerplate_detector.py       Post-migration: recolors matching sentences blue.
+    audit_log.py                  Exports migration report as CSV via polars.
+    workers.py                    AnalyzeWorker + MigrateWorker (QThread subclasses).
+
+  gui/
+    main_window.py                QMainWindow shell + HorizontalTabBar.
+    migration_tab.py              Three-step migration workflow UI (Steps 1/2/3).
+    mapping_table.py              MappingTableWidget — the interactive 5-column table.
+    mapping_visualizer.py         MappingVisualizerWidget — side panel diagram (NEW).
+    widgets.py                    NoScrollComboBox, IndentedComboDelegate, SectionLabel.
+
+  assets/
+    app_icon.ico                  Multi-size .ico (16/24/32/48/64/128/256 px).
+    app_icon.png                  PNG version.
+    genai.png                     Unused placeholder for future tab icon.
+
+  docs/
+    DRAFT_Tool_Technical_Documentation.docx   Technical reference (generated).
+    DRAFT_Tool_User_Guide.pptx                13-slide user guide (generated).
+    PROJECT_CONTEXT.txt                       This file.
+
+  scripts/
+    create_docs.py                Regenerates both docs using python-docx + pptx.
+                                  Run: python3 scripts/create_docs.py
+
+  tests/
+    test_pipeline.py              Pipeline integration tests.
+
+  .gitignore                      Blocks output/*.docx, venv/, __pycache__/, etc.
+                                  Exception: docs/*.docx IS tracked (documentation).
+
+
+────────────────────────────────────────────────────────────────────────────────
+4. DATA MODELS  (models/sections.py)
+────────────────────────────────────────────────────────────────────────────────
+
+  BlockType (enum)
+    PARAGRAPH / TABLE / IMAGE
+
+  MatchMethod (enum)
+    EXACT / FUZZY / NONE / MANUAL
+
+  MigrationMode (enum)
+    APPEND / PREPEND / REPLACE
+
+  MappingStatus (enum)
+    AUTO     — ≥ 90% confidence, auto-accepted, green row
+    REVIEW   — 65–89% confidence, user should verify, yellow row
+    UNMAPPED — no destination, red row
+    MANUAL   — user changed destination from auto-mapper's suggestion, blue row
+    SKIPPED  — user explicitly excluded this section, grey row
+
+  Section (dataclass)
+    title: str
+    heading_level: int             (1–6)
+    paragraph_index: int           (position in document.paragraphs flat list)
+    content_blocks: list[ContentBlock]
+    .display_title (property)      — title with (level-1)*3 leading spaces for UI
+    .normalized_title (property)   — stripped of section numbers and punctuation;
+                                     used ONLY for fuzzy matching
+
+  MappingResult (dataclass)
+    source_section: Section
+    dest_section: Optional[Section]          — current (mutable)
+    original_dest_section: Optional[Section] — frozen snapshot from auto-mapper
+    confidence: float
+    match_method: MatchMethod
+    status: MappingStatus                    — current (mutable)
+    original_status: MappingStatus           — frozen snapshot from auto-mapper
+    migration_mode: Optional[MigrationMode]
+    top_suggestions: list[tuple[Section, float]]
+    .has_user_changed_destination (property) — True if dest differs from original
+    .confidence_display (property)           — "87%" or "–"
+    .status_icon (property)                  — emoji for Status column
+
+  IMPORTANT: original_dest_section and original_status are set once by the
+  auto-mapper and NEVER modified afterward. The UI only touches dest_section,
+  status, and migration_mode. Comparing current vs. original is the change
+  detection mechanism.
+
+
+────────────────────────────────────────────────────────────────────────────────
+5. HEADING DETECTION  (core/document_parser.py — _get_heading_level)
+────────────────────────────────────────────────────────────────────────────────
+
+Three strategies tried in priority order:
+
+  Strategy 1 — Style name prefix
+    paragraph.style.name.lower().startswith("heading")
+    Extracts the trailing digit → level.
+    Catches: "Heading 1", "Heading 2", etc.
+
+  Strategy 2 — Paragraph-level XML <w:outlineLvl>
+    Reads <w:pPr><w:outlineLvl w:val="N"/> from the paragraph element.
+    val is 0-indexed; add 1 → heading level.
+    Catches: custom-named styles where each paragraph has its outline level set.
+
+  Strategy 3 — Style inheritance chain (basedOn walk)
+    _heading_level_from_style_chain(paragraph.style)
+    Walks current.base_style repeatedly (guarded against circular chains via
+    visited set). At each ancestor:
+      a) Check if ancestor name starts with "heading" → extract level
+      b) Check if ancestor style definition has <w:pPr><w:outlineLvl>
+    Catches: custom styles like P_Heading_1_numbered that inherit from Heading 1
+    via Word's "Style based on" but have neither a "heading" name nor per-paragraph
+    outline level set. This was a confirmed gap that is now fixed.
+
+  MAX_HEADING_LEVEL = 6  (Heading 7–9 are ignored)
+
+
+────────────────────────────────────────────────────────────────────────────────
+6. AUTO-MAPPER  (core/auto_mapper.py)
+────────────────────────────────────────────────────────────────────────────────
+
+  Thresholds:
+    AUTO_THRESHOLD         = 0.90   → MappingStatus.AUTO
+    REVIEW_THRESHOLD       = 0.65   → MappingStatus.REVIEW (0.65–0.89)
+    SUGGESTION_MIN_SCORE   = 0.30   → minimum score to appear in dropdown suggestions
+    DEFAULT_TOP_N_SUGGESTIONS = 3   → max suggestions per dropdown
+
+  Algorithm per source section:
+    1. Normalize source title (strip section numbers and punctuation, lowercase)
+    2. Score ALL destination sections (exact match = 1.0, else rapidfuzz
+       token_sort_ratio / 100). ALL destinations scored even on exact match
+       so suggestion list is complete.
+    3. Sort descending. Best candidate determines status.
+    4. Collect top_suggestions (up to 3 above 0.30, excluding primary).
+    5. Build MappingResult with frozen original fields.
+
+
+────────────────────────────────────────────────────────────────────────────────
+7. CONTENT MIGRATOR  (core/content_migrator.py)
+────────────────────────────────────────────────────────────────────────────────
+
+  Key behaviors:
+  - Creates a temp copy of the destination template; never touches the original.
+  - Builds section boundary index using XML element references (stable across
+    insertions), NOT paragraph indices (which shift after each insert).
+  - Groups source sections by destination; processes each destination once.
+  - Replace exclusivity: only the first source mapped to a destination may use
+    REPLACE; subsequent sources are forced to APPEND.
+  - All migrated text is colored green (RGBColor(0x00, 0xB0, 0x50) = #00B050).
+  - Images: extracted via <a:blip r:embed>, copied as centered bordered image
+    with a separate green caption paragraph.
+  - List numbering: copies abstractNum XML with fresh non-conflicting numIds to
+    avoid numbering collisions between source and destination.
+  - Tables: deep-copied at XML level, all runs colored green, borders normalized
+    to explicit black so they render regardless of destination stylesheet.
+
+
+────────────────────────────────────────────────────────────────────────────────
+8. BOILERPLATE DETECTOR  (core/boilerplate_detector.py)
+────────────────────────────────────────────────────────────────────────────────
+
+  Modes:
+    HIGHLIGHT_SENTENCES (default) — color only matching sentences blue
+    HIGHLIGHT_PARAGRAPH           — color whole paragraph blue if any sentence matches
+
+  How it works:
+  - Parses the template into {section_title: set[normalized_sentence]}.
+  - Walks the OUTPUT document; tracks current section heading.
+  - For each fully-green paragraph, checks sentences against the section's set.
+  - Runs straddling sentence boundaries are SPLIT in XML (deep-copy approach)
+    before coloring, preserving all run formatting.
+  - Whitespace normalization applied for comparison only; raw text never modified.
+  - Only saves the output file if at least one change was made.
+
+  Green color detection: reads XML w:color attribute directly (not python-docx
+  font.color.rgb API, which raises AttributeError on inherited/theme colors).
+
+
+────────────────────────────────────────────────────────────────────────────────
+9. GUI ARCHITECTURE
+────────────────────────────────────────────────────────────────────────────────
+
+  main_window.py
+    MainWindow (QMainWindow)
+      QTabWidget with HorizontalTabBar (custom — draws icon above label text,
+      avoids Qt's 90-degree rotation for West-position tabs)
+      Dark navy sidebar (#1e293b), blue left-edge accent on selected tab
+      Tab button: 110×82 px
+      Window sizing (UPDATED): screen-percentage based
+        Default: max(860, min(screen_w × 0.88, screen_w-20))
+                 max(600, min(screen_h × 0.90, screen_h-40))
+        Minimum: 860 × 600 px  (was 960 × 860 — reduced for 13-14" laptops)
+
+  migration_tab.py
+    MigrationTab (QWidget)
+      Layout (UPDATED — uses QSplitter):
+        outer QVBoxLayout
+          QSplitter (Qt.Horizontal, handleWidth=1)
+            content_widget (Steps 1 / 2 / 3)  ← left pane, not collapsible
+            MappingVisualizerWidget            ← right pane, hidden by default
+          status bar (QFrame, 32px, dark navy)  ← OUTSIDE splitter, full-width
+
+      Step 1 — Load Documents
+        Source/Destination file pickers, Analyze button
+        Output folder pre-filled from source directory
+        Output filename pre-filled as {stem}_migrated_{YYYYMMDD}
+
+      Step 2 — Review Section Mappings
+        Save Profile / Load Profile buttons
+        MappingTableWidget (see Section 10)
+        "🗺 Visualize Mapping" toggle button (checkable, blue fill when active)
+          → toggles MappingVisualizerWidget panel (60/40 split)
+          → panel is seeded with current data before becoming visible
+          → every mapping change pushes live updates to the panel
+          → Step 2 lock resets the toggle and hides the panel
+
+      Step 3 — Migration Options
+        Unmapped acknowledgement checkbox (shown only when unmapped count > 0)
+        Export CSV checkbox (checked by default)
+        Template Match Highlighting radio buttons (sentence/paragraph mode)
+        Output folder + filename inputs
+        Run Migration button
+
+      Status bar (always visible, full-width):
+        Left: 🟢 N Auto-Mapped  🟡 N Needs Review  🔴 N Unmapped  ⏭ N Skipped  📝 N Changed
+        (Status bar DOES NOT contain the visualizer color key — that moved into
+        the visualizer panel itself as a pinned legend bar at the bottom)
+
+  mapping_table.py
+    MappingTableWidget (QWidget)
+      Filter radio buttons: All / Auto-Mapped / Needs Review / Unmapped / Skipped / Changed
+      QTableWidget — 5 columns:
+        Source Section (stretch)    — bold for level-1 headings
+        Destination Section (stretch) — searchable NoScrollComboBox with
+                                        IndentedComboDelegate and _SearchLineEdit
+        Mode (110px)               — Append / Prepend / Replace
+        Match (52px)               — confidence display
+        Status (60px)              — status icon emoji
+
+      Destination combo structure (fixed order):
+        [0]  "Unmapped"  (sentinel, userData=-1)
+        [1]  separator
+        [2]  "⏭  Skip this section"  (sentinel, userData=-2)
+        [3]  separator
+        [4..N]  ✨ suggestion items  (up to 3, with % confidence in label)
+        [N+1]  separator  (only if suggestions exist)
+        [N+2..end]  full destination section list (heading level in UserRole+1
+                    for IndentedComboDelegate indentation)
+
+      Replace exclusivity: first source mapped to a destination "owns" Replace;
+        all other rows targeting the same destination have Replace greyed out.
+        Ownership is position-based (not selection-time-based).
+
+      _SearchLineEdit (QLineEdit installed via setLineEdit)
+        On focus-out: 150ms timer → _revert_if_invalid
+        CRITICAL BUG FIX: Qt separator items return "" from itemText().
+        Guard: validity check only runs when self.text() is non-empty.
+        Otherwise empty text always reverts to last valid selection.
+        Store ref: combo._search_line_edit = le  (prevents Python GC)
+
+      countChanged(dict) signal emitted on every mapping change.
+      dict keys: "auto", "review", "unmapped", "skipped", "changed"
+
+      get_results() → list[MappingResult]  (current state)
+      populate(results, dest_sections)     (rebuilds table from scratch)
+      reset()                              (clears table)
+
+  mapping_visualizer.py  (NEW FILE)
+    MappingVisualizerWidget (QWidget)
+      QScrollArea → MappingCanvas  (scroll area takes all available height)
+      Legend bar (32px, pinned at bottom, light #f8fafc background)
+        Centered: ● Mapped  ● Review  ● Unmapped  ● Skipped
+      Public API: update_mappings(results: list[MappingResult], dest_sections: list)
+
+    MappingCanvas (QWidget, custom-painted)
+      Layout: source column (left, ~42% width) + connector curves + dest column (right, ~42%)
+      Column headers: "Source Document" / "Destination Document" (centered, bold)
+
+      Source boxes: ALL source sections stacked in document order
+        Color by MappingStatus:
+          AUTO / MANUAL → green fill (#DCFCE7) + green border (#16A34A)
+          REVIEW        → amber fill (#FEF3C7) + amber border (#D97706)
+          UNMAPPED      → red fill   (#FEF2F2) + red border   (#DC2626)
+          SKIPPED       → blue fill  (#EFF6FF) + blue border  (#2563EB)
+
+      Destination boxes: ALL dest sections stacked in document order
+        (NOT just the mapped ones — every section from the destination doc is shown)
+        Color by whether anything maps to them:
+          ≥1 active source maps to it → green fill (#DCFCE7) + green border (#16A34A)
+          Nothing maps to it           → blue fill  (#EFF6FF) + blue border (#2563EB)
+        "Active" = not UNMAPPED or SKIPPED status
+
+      Connector lines:
+        Bezier curves (cubicTo) from source box right edge to dest box left edge
+        Only drawn for non-UNMAPPED, non-SKIPPED results
+        Line color = _STATUS_BORDER[result.status]
+        Line width = 1.6px, RoundCap style
+
+      Box height: calculated via QFontMetrics.boundingRect with Qt.TextWordWrap
+        so long titles don't get clipped. Minimum height: 32px.
+      Font: Segoe UI 10pt
+      resizeEvent triggers _recalculate() so layout updates on splitter drag
+
+  widgets.py
+    NoScrollComboBox  — ignores wheelEvent when dropdown is closed
+    IndentedComboDelegate — draws combo items with heading-level indentation
+                            (14px per level beyond level 1, read from UserRole+1)
+    SectionLabel      — small italic instruction label under step group titles
+
+
+────────────────────────────────────────────────────────────────────────────────
+10. MAPPING PROFILES
+────────────────────────────────────────────────────────────────────────────────
+
+  JSON format (version 1):
+    {
+      "version": 1,
+      "created_at": "2026-05-11T14:30:00",
+      "mappings": [
+        {
+          "source_title": "1. Introduction",
+          "dest_title": "1. Overview",
+          "migration_mode": "append"
+        }
+      ]
+    }
+
+  Save: captures current table state. Uses section.title (not display_title)
+        for reliable matching.
+  Load: matches by exact source_title. If recorded dest_title not found in
+        current template, row is left as auto-mapped (skipped count). After
+        applying, table is repopulated from scratch so all visual state updates.
+  Status restoration: if profile destination matches original auto-mapped one,
+        restores original_status (AUTO/REVIEW) rather than marking MANUAL.
+
+
+────────────────────────────────────────────────────────────────────────────────
+11. WORKERS  (core/workers.py)
+────────────────────────────────────────────────────────────────────────────────
+
+  AnalyzeWorker (QThread)
+    Signals: progress(str), finished(source_sections, dest_sections,
+             mapping_results, source_parser, dest_parser), error(str)
+    Runs: DocumentParser (source) + DocumentParser (dest) + AutoMapper
+
+  MigrateWorker (QThread)
+    Signals: progress(str), finished(MigrationReport), error(str),
+             boilerplate_done(int)
+    Runs in sequence: ContentMigrator → BoilerplateDetector → MigrationReportExporter
+
+
+────────────────────────────────────────────────────────────────────────────────
+12. END-TO-END DATA FLOW
+────────────────────────────────────────────────────────────────────────────────
+
+  File selection → AnalyzeWorker:
+    DocumentParser(source).parse() → list[Section] with content_blocks
+    DocumentParser(dest).parse()   → list[Section] (no content needed)
+    AutoMapper(source_secs, dest_secs).run() → list[MappingResult]
+
+  Table interaction → MappingTableWidget:
+    populate(results, dest_sections) → builds rows, combos, delegates
+    User changes combo/mode → _on_mapping_changed() → countChanged.emit(counts)
+    countChanged → migration_tab._on_mapping_counts_changed()
+                 → updates status bar labels
+                 → if visualizer panel open: update_mappings(results, dest_sections)
+
+  Run Migration → MigrateWorker:
+    Re-parse both files fresh (not the cached parser objects)
+    ContentMigrator.run() → MigrationReport
+    BoilerplateDetector.run() → int (recolored paragraph count)
+    MigrationReportExporter.export() → str (CSV path)
+
+  Output document color convention:
+    Black  = original template content (untouched)
+    Green  = migrated content from source (#00B050)
+    Blue   = green text that verbatim matches template boilerplate (#0070C0)
+
+
+────────────────────────────────────────────────────────────────────────────────
+13. KNOWN ISSUES AND GOTCHAS
+────────────────────────────────────────────────────────────────────────────────
+
+  Qt separator itemText() returns ""
+    QComboBox.insertSeparator() items return "" from itemText(i).
+    Any validity check loop must guard with `if text:` or separators will be
+    treated as valid item matches. See _SearchLineEdit._revert_if_invalid().
+
+  setCurrentIndex() no-op when index unchanged
+    After clearing line edit text programmatically, calling setCurrentIndex with
+    the same index does nothing. Use setEditText() to force visual update.
+
+  setLineEdit() Python GC risk
+    Qt takes C++ ownership of the installed line edit. Store a Python reference
+    on the combo object (combo._search_line_edit = le) to prevent GC.
+
+  Duplicate heading titles in destination
+    _build_section_boundary_index() only indexes the FIRST occurrence of each
+    heading title. Sections with duplicate titles get content inserted into the
+    first one only.
+
+  numId cross-document conflicts
+    List numbering uses document-local integer IDs. ContentMigrator copies
+    abstractNum with fresh non-conflicting IDs. Malformed numbering XML is
+    caught and silently skipped (paragraph migrates without list formatting).
+
+  PyInstaller --onefile startup time
+    --onefile extracts to a temp directory on every launch (~10 sec cold start).
+    Use --onedir for faster startup at the cost of a folder instead of a
+    single file. Startup time is a PyInstaller extraction issue, not the app.
+
+  ⚠️ emoji on macOS status column
+    ⚠️ renders as monochrome (invisible on dark backgrounds) on macOS.
+    Replaced with 🟡 for the REVIEW status to ensure visibility.
+
+
+────────────────────────────────────────────────────────────────────────────────
+14. CONSTANTS REFERENCE
+────────────────────────────────────────────────────────────────────────────────
+
+  core/auto_mapper.py
+    AUTO_THRESHOLD          = 0.90
+    REVIEW_THRESHOLD        = 0.65
+    SUGGESTION_MIN_SCORE    = 0.30
+    DEFAULT_TOP_N_SUGGESTIONS = 3
+
+  core/document_parser.py
+    MAX_HEADING_LEVEL       = 6
+    HEADING_STYLE_PREFIX    = "heading"
+
+  core/content_migrator.py
+    MIGRATED_CONTENT_COLOR  = RGBColor(0x00, 0xB0, 0x50)   # green #00B050
+    MIGRATED_CONTENT_COLOR_HEX = "00B050"
+
+  core/boilerplate_detector.py
+    MIGRATED_CONTENT_COLOR  = RGBColor(0x00, 0xB0, 0x50)   # green
+    BOILERPLATE_MATCH_COLOR = RGBColor(0x00, 0x70, 0xC0)   # blue #0070C0
+
+  gui/widgets.py
+    INDENT_PIXELS_PER_LEVEL = 14
+
+  gui/main_window.py
+    MINIMUM_WINDOW_WIDTH    = 860
+    MINIMUM_WINDOW_HEIGHT   = 600
+    TAB_BUTTON_WIDTH        = 110
+    TAB_BUTTON_HEIGHT       = 82
+    TAB_ICON_SIZE           = 28
+
+  gui/mapping_visualizer.py
+    _FONT_SIZE      = 10  pt
+    _BOX_PADDING    = 8   px
+    _BOX_GAP        = 8   px
+    _BOX_MIN_HEIGHT = 32  px
+    _BOX_RADIUS     = 5   px
+    _LINE_WIDTH     = 1.6 px
+    _HEADER_HEIGHT  = 14  px
+
+
+────────────────────────────────────────────────────────────────────────────────
+15. WHAT WAS BUILT / RECENT CHANGES
+────────────────────────────────────────────────────────────────────────────────
+
+  The following features were built across recent sessions (most recent last):
+
+  a) Three-strategy heading detection
+     document_parser.py now walks the <w:basedOn> style inheritance chain
+     (Strategy 3) to detect custom styles like P_Heading_1_numbered that
+     inherit from built-in Heading styles. Fixes documents where custom
+     styles prevented any headings from being detected.
+
+  b) Searchable destination combo with revert-on-focus-out
+     Each destination combo has a _SearchLineEdit installed via setLineEdit().
+     Typing filters the combo; clicking away without selecting reverts to the
+     last confirmed valid selection. Key bug fix: separator items return "" from
+     itemText() — guard with `if text:` before validity check loop.
+
+  c) Mapping Profiles (Save / Load)
+     JSON profile format (version 1). Saves current table state. Load applies
+     saved destinations and modes; unmatched rows keep auto-mapped result.
+     Status restoration: reverts to AUTO/REVIEW if user reverts to original dest.
+
+  d) Replace exclusivity rule
+     First source mapped to a destination owns Replace mode. All others have
+     Replace greyed out. Position-based (not selection-time-based) to prevent
+     mode-switching exploits.
+
+  e) Visualize Mapping panel  (gui/mapping_visualizer.py — NEW FILE)
+     Toggle button in Step 2 opens a side panel at 60/40 split.
+     Shows all source sections (left) and all destination sections (right)
+     with bezier connector lines for active mappings.
+     Source boxes colored by mapping status; destination boxes green (mapped)
+     or blue (unmapped). Updates live on every mapping change.
+     Legend bar pinned at bottom of panel (light background, always visible).
+     Canvas scrolls; legend stays pinned.
+
+  f) Responsive window sizing
+     main_window.py now sizes to 88%×90% of the primary screen by default.
+     Hard minimum reduced from 960×860 to 860×600 for 13-14" laptops.
+
+  g) Technical documentation regenerated
+     scripts/create_docs.py updated and re-run. Docs at:
+     docs/DRAFT_Tool_Technical_Documentation.docx
+
+
+────────────────────────────────────────────────────────────────────────────────
+16. POTENTIAL FUTURE WORK
+────────────────────────────────────────────────────────────────────────────────
+
+  - Document Review tab (gui/document_review_tab.py stub exists, not implemented)
+  - Batch migration (process multiple source documents against one template)
+  - Undo/redo for mapping table changes
+  - Export visualizer diagram as image
+  - Dark mode support
+  - Better handling of duplicate destination heading titles
+
+
+────────────────────────────────────────────────────────────────────────────────
+17. HOW TO REGENERATE DOCUMENTATION
+────────────────────────────────────────────────────────────────────────────────
+
+  cd /Users/stursdev/Desktop/doc_migrator_v2
+  source .venv/bin/activate
+  python3 scripts/create_docs.py
+
+  This regenerates:
+    docs/DRAFT_Tool_Technical_Documentation.docx
+    docs/DRAFT_Tool_User_Guide.pptx
+
+  NOTE: User guide (.pptx) is managed manually — do not overwrite without
+  intent. Run only build_technical_doc() if you only want the tech doc:
+
+    python3 -c "from scripts.create_docs import build_technical_doc; build_technical_doc()"
+
+
+────────────────────────────────────────────────────────────────────────────────
+18. GIT WORKFLOW
+────────────────────────────────────────────────────────────────────────────────
+
+  Remote: https://github.com/stursdev/DRAFT-Tool.git
+  Branch: main
+
+  Standard commit flow:
+    git add <files>
+    git commit -m "message"
+    git push
+
+  .gitignore key rules:
+    output/*.docx     blocked (tool output files)
+    docs/*.docx       ALLOWED (documentation exception: !docs/*.docx)
+    .venv/            blocked
+    __pycache__/      blocked
+    *.log             blocked
+
+================================================================================
+END OF CONTEXT FILE
+================================================================================

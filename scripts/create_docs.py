@@ -103,7 +103,7 @@ def build_technical_doc():
     sub.runs[0].font.color.rgb = RGBColor(0x47, 0x55, 0x69)
 
     doc.add_paragraph("")
-    version = doc.add_paragraph("Version 1.0  ·  Document Migration Tool")
+    version = doc.add_paragraph("Version 2.0  ·  Document Migration Tool")
     version.alignment = WD_ALIGN_PARAGRAPH.CENTER
     version.runs[0].font.size = Pt(10)
     version.runs[0].font.color.rgb = RGBColor(0x94, 0xA3, 0xB8)
@@ -168,19 +168,21 @@ def build_technical_doc():
         cell.paragraphs[0].runs[0].font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
 
     for row_data in [
-        ("main.py",                 "Entry point — creates QApplication and MainWindow"),
-        ("models/sections.py",      "All shared data models and enums"),
-        ("core/document_parser.py", "Reads .docx files into Section objects"),
-        ("core/auto_mapper.py",     "Matches source sections to destination sections"),
-        ("core/content_migrator.py","Writes migrated content into the output document"),
+        ("main.py",                      "Entry point — creates QApplication and MainWindow"),
+        ("models/sections.py",           "All shared data models and enums"),
+        ("core/document_parser.py",      "Reads .docx files into Section objects"),
+        ("core/auto_mapper.py",          "Matches source sections to destination sections"),
+        ("core/content_migrator.py",     "Writes migrated content into the output document"),
         ("core/boilerplate_detector.py", "Recolors boilerplate-matching text blue"),
-        ("core/audit_log.py",       "Exports migration report as CSV"),
-        ("core/workers.py",         "Background QThread workers for long operations"),
-        ("gui/main_window.py",      "Top-level QMainWindow shell with sidebar tab bar"),
-        ("gui/migration_tab.py",    "Three-step migration workflow UI"),
-        ("gui/mapping_table.py",    "Interactive section mapping table widget"),
-        ("gui/widgets.py",          "Reusable custom widgets (combo, delegate, label)"),
-        ("assets/",                 "Application icon files"),
+        ("core/audit_log.py",            "Exports migration report as CSV"),
+        ("core/workers.py",              "Background QThread workers for long operations"),
+        ("gui/main_window.py",           "Top-level QMainWindow shell with sidebar tab bar"),
+        ("gui/migration_tab.py",         "Three-step migration workflow UI (QSplitter layout)"),
+        ("gui/mapping_table.py",         "Interactive section mapping table widget"),
+        ("gui/mapping_visualizer.py",    "Side panel — live source→destination diagram"),
+        ("gui/widgets.py",               "Reusable custom widgets (combo, delegate, label)"),
+        ("assets/",                      "Application icon files"),
+        ("docs/PROJECT_CONTEXT.txt",     "Full project context for resuming development"),
     ]:
         add_table_row(tbl2, row_data)
 
@@ -273,13 +275,39 @@ def build_technical_doc():
     add_heading(doc, "4.1 DocumentParser  —  core/document_parser.py", 2)
     add_body(doc,
         "Reads a .docx file and produces a flat ordered list of Section objects. "
-        "Handles heading detection via style name and XML outline level fallback, "
-        "preserves paragraph-table interleave order by walking raw XML, filters "
-        "blank headings, and tags image paragraphs."
+        "Uses three heading detection strategies in priority order, preserves "
+        "paragraph-table interleave order by walking raw XML, filters blank "
+        "headings, and tags image paragraphs."
     )
 
     add_heading(doc, "  Constructor", 3)
     add_bullet(doc, "DocumentParser(filepath: str)")
+
+    add_heading(doc, "  Heading Detection — Three Strategies", 3)
+    add_body(doc,
+        "Strategies are tried in order for every paragraph. The first one that "
+        "returns a level wins; if all three return None the paragraph is not a heading."
+    )
+    for strategy, desc in [
+        ("Strategy 1 — Style name prefix",
+         "paragraph.style.name.lower().startswith('heading'). Extracts the trailing "
+         "digit as the level. Catches all built-in Word heading styles: Heading 1, "
+         "Heading 2, etc."),
+        ("Strategy 2 — Paragraph XML <w:outlineLvl>",
+         "Reads the <w:pPr><w:outlineLvl w:val='N'> element directly from the "
+         "paragraph XML. val is 0-indexed; add 1 for the level. Catches custom-named "
+         "styles where each paragraph has its outline level set explicitly."),
+        ("Strategy 3 — Style inheritance chain (basedOn walk)",
+         "_heading_level_from_style_chain() walks current.base_style repeatedly "
+         "(guarded against circular chains via a visited-id set). At each ancestor "
+         "checks both the ancestor style name and its style-definition <w:outlineLvl>. "
+         "Catches custom styles like P_Heading_1_numbered that inherit from Heading 1 "
+         "via Word's 'Style based on' setting but have neither a 'heading' name nor "
+         "per-paragraph outline level. Previously a gap that caused entire documents "
+         "to appear sectionless when custom heading styles were used."),
+    ]:
+        add_bullet(doc, strategy)
+        add_subbullet(doc, desc)
 
     add_heading(doc, "  Key Methods", 3)
     for meth, desc in [
@@ -291,13 +319,15 @@ def build_technical_doc():
          "The ContentMigrator reads this to access the source document directly."),
         ("_get_body_elements_in_order()",
          "Returns all paragraphs and tables in their true interleaved order by iterating "
-         "the raw XML body children and mapping each to its python-docx object. This is "
-         "necessary because python-docx exposes paragraphs and tables as separate flat "
-         "lists, losing their relative order."),
+         "the raw XML body children and mapping each to its python-docx object. Necessary "
+         "because python-docx exposes paragraphs and tables as separate flat lists."),
         ("_get_heading_level(paragraph) → Optional[int]",
-         "Checks the paragraph style name first ('Heading 1', 'Heading 2', …). Falls "
-         "back to the XML <w:outlineLvl> attribute for documents using custom style "
-         "names. Returns None for non-heading paragraphs."),
+         "Runs the three detection strategies in sequence. Returns the heading level "
+         "(1–6) from the first strategy that matches, or None for non-heading paragraphs."),
+        ("_heading_level_from_style_chain(style) → Optional[int]",
+         "Strategy 3 implementation. Walks the basedOn ancestry chain checking each "
+         "ancestor style's name and pPr/outlineLvl. Uses a visited-id set to guard "
+         "against malformed circular basedOn references."),
         ("_paragraph_contains_image(paragraph) → bool",
          "Checks each run for a <w:drawing> XML child element to detect inline images."),
     ]:
@@ -480,17 +510,29 @@ def build_technical_doc():
 
     add_heading(doc, "  MainWindow(QMainWindow)", 3)
     add_body(doc,
-        "Hosts the QTabWidget with HorizontalTabBar. Minimum size 960×860 px. "
-        "Centers itself on the primary screen. Loads app_icon.ico from assets/. "
-        "Currently contains one tab (Document Migration). Adding a new tab requires "
-        "only one addTab() call in _build_ui() — no other files need changes."
+        "Hosts the QTabWidget with HorizontalTabBar. Default window size is "
+        "screen-percentage based: 88% of screen width × 90% of screen height, "
+        "capped at screen minus 20/40 px to keep a sliver of desktop visible. "
+        "Hard minimum: 860×600 px (reduced from the earlier 960×860 to accommodate "
+        "13-14 inch laptop displays). Centers itself on the primary screen. "
+        "Loads app_icon.ico from assets/. Currently contains one tab (Document "
+        "Migration). Adding a new tab requires only one addTab() call in _build_ui()."
     )
 
     add_heading(doc, "5.2 migration_tab.py", 2)
     add_body(doc,
-        "The full Document Migration workflow — three step groups in a vertical "
-        "layout plus a status bar. All application state lives here."
+        "The full Document Migration workflow — three step groups plus a status bar. "
+        "Uses a QSplitter(Horizontal) layout so the Mapping Visualization side panel "
+        "can share space with the main content. The status bar sits outside the "
+        "splitter so it always spans the full window width."
     )
+
+    add_heading(doc, "  Layout Structure", 3)
+    add_body(doc, "Outer QVBoxLayout contains:")
+    add_bullet(doc, "QSplitter (Horizontal, handleWidth=1, both panes non-collapsible)")
+    add_subbullet(doc, "Left pane — content_widget with Steps 1, 2, 3 in a QVBoxLayout")
+    add_subbullet(doc, "Right pane — MappingVisualizerWidget (hidden by default)")
+    add_bullet(doc, "Status bar QFrame (32px, dark navy) — outside the splitter, always full-width")
 
     add_heading(doc, "  State Fields", 3)
     for field, desc in [
@@ -500,6 +542,8 @@ def build_technical_doc():
         ("_source_parser / _dest_parser", "Kept after analysis; re-parsed fresh at migration time"),
         ("_user_acknowledged_unmapped_sections", "Flag for the unmapped acknowledgement checkbox"),
         ("_current_status_counts", "Latest count dict from MappingTableWidget.countChanged"),
+        ("_visualizer_panel", "MappingVisualizerWidget instance in the splitter's right pane"),
+        ("_visualize_button", "Checkable QPushButton that toggles the visualizer panel"),
     ]:
         add_bullet(doc, f"{field} — {desc}")
 
@@ -519,6 +563,15 @@ def build_technical_doc():
         "source_title. If the recorded destination no longer exists in the current template, "
         "the row is left unchanged. After applying a profile the table is repopulated from "
         "scratch so all visual state updates correctly."
+    )
+
+    add_heading(doc, "  Visualize Mapping Toggle", 3)
+    add_body(doc,
+        "The '🗺 Visualize Mapping' checkable button is placed below the mapping table "
+        "in Step 2. When clicked on: seeds the visualizer panel with current results, "
+        "makes it visible, sets the splitter to a 60/40 split. When clicked off: hides "
+        "the panel. Every mapping change (countChanged signal) pushes a live update to "
+        "the panel when it is open. Locking Step 2 resets the toggle and hides the panel."
     )
 
     add_heading(doc, "  Migration Flow", 3)
@@ -578,7 +631,70 @@ def build_technical_doc():
         "valid selections and suppressing the revert."
     )
 
-    add_heading(doc, "5.4 widgets.py", 2)
+    add_heading(doc, "5.4 mapping_visualizer.py", 2)
+    add_body(doc,
+        "Side panel that renders a live diagram of the current section mappings. "
+        "Toggled open/closed by the 'Visualize Mapping' button in Step 2. "
+        "Displays ALL sections from both documents — not just mapped ones — "
+        "so the user can see the full picture of what is and is not connected."
+    )
+
+    add_heading(doc, "  MappingVisualizerWidget(QWidget)", 3)
+    add_body(doc,
+        "Container widget. Layout: QScrollArea (stretch=1) + pinned legend bar (32px). "
+        "The legend bar has a light #f8fafc background and shows the color key "
+        "(Mapped / Review / Unmapped / Skipped) centered horizontally. It is always "
+        "visible regardless of scroll position because it sits outside the scroll area."
+    )
+    add_bullet(doc, "update_mappings(results, dest_sections) — public API; pushes new data to the canvas and triggers repaint")
+
+    add_heading(doc, "  MappingCanvas(QWidget) — custom painted", 3)
+    add_body(doc,
+        "Draws source boxes on the left (~42% of canvas width) and destination boxes "
+        "on the right (~42%), with bezier connector curves in the middle. Both columns "
+        "stack all sections in document order. resizeEvent triggers _recalculate() so "
+        "the layout adapts when the splitter is dragged."
+    )
+
+    add_heading(doc, "  Source Box Colors", 3)
+    for status, fill, border in [
+        ("AUTO / MANUAL", "#DCFCE7 fill", "#16A34A border (green)"),
+        ("REVIEW",        "#FEF3C7 fill", "#D97706 border (amber)"),
+        ("UNMAPPED",      "#FEF2F2 fill", "#DC2626 border (red)"),
+        ("SKIPPED",       "#EFF6FF fill", "#2563EB border (blue)"),
+    ]:
+        add_bullet(doc, f"{status} — {fill}, {border}")
+
+    add_heading(doc, "  Destination Box Colors", 3)
+    add_body(doc,
+        "Destination boxes use only two colors — red and amber are not used because "
+        "a destination section is either reachable or not:"
+    )
+    add_bullet(doc, "≥1 active source maps to it — green fill (#DCFCE7), green border (#16A34A)")
+    add_bullet(doc, "Nothing maps to it — blue fill (#EFF6FF), blue border (#2563EB)")
+    add_body(doc,
+        "'Active' means the source's status is not UNMAPPED or SKIPPED — those "
+        "statuses produce no migration output."
+    )
+
+    add_heading(doc, "  Connector Lines", 3)
+    add_bullet(doc, "Cubic bezier curves from source box right-edge midpoint to destination box left-edge midpoint")
+    add_bullet(doc, "Color = _STATUS_BORDER[result.status] (green, amber, red, or blue)")
+    add_bullet(doc, "Only drawn for results where dest_section is not None AND status is not UNMAPPED or SKIPPED")
+    add_bullet(doc, "Line width 1.6px, Qt.RoundCap style")
+
+    add_heading(doc, "  _recalculate()", 3)
+    add_body(doc,
+        "Called on set_data() and resizeEvent. Computes all box positions. "
+        "Source boxes: stacked top-to-bottom in self._results order. "
+        "Destination boxes: all sections from self._dest_sections stacked top-to-bottom "
+        "in document order. Box heights calculated via QFontMetrics.boundingRect() "
+        "with Qt.TextWordWrap so long titles wrap correctly. "
+        "Calls setMinimumHeight(total_content_height) so the QScrollArea knows the "
+        "scrollable extent."
+    )
+
+    add_heading(doc, "5.5 widgets.py", 2)
 
     for widget, desc in [
         ("NoScrollComboBox(QComboBox)",
@@ -652,14 +768,19 @@ def build_technical_doc():
         tbl3.rows[0].cells[i].paragraphs[0].runs[0].font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
 
     for row_data in [
-        ("AUTO_THRESHOLD",        "0.90", "Scores ≥ this are auto-accepted (green)"),
-        ("REVIEW_THRESHOLD",      "0.65", "Scores in [0.65, 0.90) need review (yellow)"),
-        ("SUGGESTION_MIN_SCORE",  "0.30", "Minimum score to appear as a dropdown suggestion"),
-        ("DEFAULT_TOP_N_SUGGESTIONS", "3", "Max suggestions shown per destination combo"),
-        ("MAX_HEADING_LEVEL",     "6",    "Deepest heading level the parser will detect"),
-        ("INDENT_PIXELS_PER_LEVEL", "14", "Extra left indent per heading level in combo dropdown"),
-        ("TAB_BUTTON_WIDTH",      "110",  "Width of sidebar tab buttons (px)"),
-        ("TAB_BUTTON_HEIGHT",     "82",   "Height of sidebar tab buttons (px)"),
+        ("AUTO_THRESHOLD",           "0.90", "Scores ≥ this are auto-accepted (green)"),
+        ("REVIEW_THRESHOLD",         "0.65", "Scores in [0.65, 0.90) need review (yellow)"),
+        ("SUGGESTION_MIN_SCORE",     "0.30", "Minimum score to appear as a dropdown suggestion"),
+        ("DEFAULT_TOP_N_SUGGESTIONS","3",    "Max suggestions shown per destination combo"),
+        ("MAX_HEADING_LEVEL",        "6",    "Deepest heading level the parser will detect"),
+        ("INDENT_PIXELS_PER_LEVEL",  "14",   "Extra left indent per heading level in combo dropdown"),
+        ("MINIMUM_WINDOW_WIDTH",     "860",  "Hard minimum window width (px)"),
+        ("MINIMUM_WINDOW_HEIGHT",    "600",  "Hard minimum window height (px)"),
+        ("TAB_BUTTON_WIDTH",         "110",  "Width of sidebar tab buttons (px)"),
+        ("TAB_BUTTON_HEIGHT",        "82",   "Height of sidebar tab buttons (px)"),
+        ("_FONT_SIZE (visualizer)",  "10 pt","Box text and header font size in visualizer"),
+        ("_BOX_GAP (visualizer)",    "8 px", "Vertical gap between boxes in visualizer"),
+        ("_LINE_WIDTH (visualizer)", "1.6 px","Connector line stroke width in visualizer"),
     ]:
         add_table_row(tbl3, row_data)
 
@@ -672,7 +793,7 @@ def build_technical_doc():
         ("Qt separator itemText() returns empty string",
          "QComboBox separator items return '' from itemText(i). Any loop checking "
          "item text for validity must guard against empty text or separators will "
-         "be incorrectly treated as valid selections. See _SearchLineEdit._revert_if_invalid."),
+         "be incorrectly treated as valid selections. See _SearchLineEdit._revert_if_invalid()."),
         ("setCurrentIndex() is a no-op when index unchanged",
          "After the line edit text is cleared programmatically without changing "
          "the combo's stored index, calling setCurrentIndex(same_idx) does nothing. "
@@ -681,11 +802,12 @@ def build_technical_doc():
          "setLineEdit() gives Qt C++ ownership of the line edit. Store a Python "
          "reference on the combo (combo._search_line_edit = le) to prevent the "
          "Python wrapper from being garbage-collected while Qt holds only the C++ object."),
-        ("Word outline level XML (custom heading styles)",
-         "Documents using custom style names that do not follow the 'Heading N' naming "
-         "convention will still be detected if the <w:outlineLvl> attribute is set. "
-         "Documents that set neither the style name nor the outline level will not have "
-         "their headings recognized."),
+        ("Custom heading styles — resolved by Strategy 3",
+         "Documents using styles like P_Heading_1_numbered that inherit from built-in "
+         "Heading styles via Word's 'Style based on' setting are now fully detected by "
+         "the basedOn chain walk (Strategy 3 in _get_heading_level). This was a gap "
+         "that previously caused entire documents with custom heading styles to appear "
+         "sectionless."),
         ("Same destination heading appearing twice",
          "_build_section_boundary_index() indexes only the first occurrence of each "
          "heading title. Documents with duplicate heading titles will only have "
@@ -695,6 +817,16 @@ def build_technical_doc():
          "copies abstractNum definitions into the destination's numbering.xml with "
          "fresh non-conflicting IDs. Malformed numbering XML is caught and silently "
          "skipped — the paragraph migrates without list formatting."),
+        ("Visualizer legend alignment",
+         "The color-key legend for the visualizer panel must live inside the "
+         "MappingVisualizerWidget (below the QScrollArea), NOT in the main status bar. "
+         "The status bar sits outside the QSplitter; the visualizer panel is inside it. "
+         "Placing the legend in the status bar creates a height mismatch because the "
+         "two widgets have no shared Y reference when content heights differ."),
+        ("PyInstaller --onefile startup time",
+         "--onefile extracts all bundled files to a temp directory on every launch, "
+         "causing approximately 10 second cold-start times. Use --onedir for faster "
+         "startup at the cost of distributing a folder rather than a single file."),
     ]:
         add_heading(doc, f"  {title}", 3)
         add_body(doc, detail)
